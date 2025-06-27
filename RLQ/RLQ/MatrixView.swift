@@ -3,24 +3,25 @@ import MLX
 
 struct MatrixView: View {
 	// MARK: Properties
-	let matrix: MLXArray
-	var integers: [[Int]]
+	var matrix: RLQ
+	@State var integers: [[Int]] // The copy of the matrix for printing/viewing
 	@State private var hoverIndex: (Int, Int)? = nil
 	
 	// MARK: Body
-	init(matrix: MLXArray) {
-		self.matrix = matrix
-		self.integers = []
-		let shape = matrix.shape
-		let rows = Int(shape[0])
-		let cols = Int(shape[1])
-		for row in 0..<rows {
-			integers.append(Array(repeating: 0, count: cols))
-			for col in 0..<cols {
-				let element: Int = matrix[row][col].item()
-				self.integers[row][col] = element
-			}
-		}
+	init(input_matrix: MLXArray) {
+		let im = RLQ(input_matrix)
+		self.matrix = im
+		self.integers = im.intArray()
+	}
+	
+	func align() {
+		self.integers = self.matrix.intArray()
+	}
+	
+	func colzeroPass(cm: Int, rm: Int) {
+		self.matrix.colzeroPass(col: cm, row: rm)
+		self.integers[rm][cm] = 0
+		
 	}
 	
 	var body: some View {
@@ -44,14 +45,15 @@ struct MatrixView: View {
 								}
 								.contextMenu {
 									Button(action: {
-										()
+										self.colzeroPass(cm: col, rm: row)
+										self.align()
 									}) {
-										Text("Function 1")
+										Text("colzeroPass")
 									}
 									Button(action: {
-										()
+										self.integers[row][col] = 0
 									}) {
-										Text("Function 2")
+										Text("Make Zero")
 									}
 									Button(action: {
 										()
