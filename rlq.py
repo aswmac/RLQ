@@ -601,7 +601,7 @@ class rlq(object):
         change=True
     return change
   def colzero(self, cm=0, rm=0):
-    while self.colzero_pass(rm,cm): continue
+    while self.colzero_pass(cm,rm): continue
     if self.pid[rm][cm] < 0: self.rowneg(rm)
     return
   def dotzero_pass(self,rm=None):
