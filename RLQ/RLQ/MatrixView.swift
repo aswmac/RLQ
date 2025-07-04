@@ -3,8 +3,9 @@ import MLX
 
 struct MatrixView: View {
 	// MARK: Properties
-	var matrix: RLQ
+	@State var matrix: RLQ
 	@State var integers: [[Int]] // The copy of the matrix for printing/viewing
+	@State var floaters: [[Float]] // The copy of the matrix for printing/viewing
 	@State private var hoverIndex: (Int, Int)? = nil
 	
 	// MARK: Body
@@ -12,20 +13,60 @@ struct MatrixView: View {
 		let im = RLQ(input_matrix)
 		self.matrix = im
 		self.integers = im.intArray()
+		self.floaters = im.floatArray()
 	}
 	
 	func align() {
 		self.integers = self.matrix.intArray()
+		self.floaters = self.matrix.floatArray()
 	}
 	
 	func colzeroPass(cm: Int, rm: Int) {
-		self.matrix.colzeroPass(col: cm, row: rm)
-		self.integers[rm][cm] = 0
+		_ = self.matrix.colzeroPass(col: cm, row: rm)
 		
 	}
 	
 	var body: some View {
 		VStack {
+			Grid(alignment: .center) {
+				ForEach(0..<floaters.count, id: \.self) { row in
+					GridRow {
+						ForEach(0..<floaters[row].count, id: \.self) { col in
+							let t: Float = floaters[row][col]
+							//let c: String = "\(t, format: .scientific, significantDigits: 5)"
+							Text("\(t)") //t.formatted(.number.notation(.scientific).significantDigits(5))) GIVES PROBLEM!!
+								.contextMenu {
+									Button(action: {
+										//guard row > 0 else { return } // The input is dimension checked by the view
+										self.matrix.houseRow(row, col)
+										//self.matrix.lq() // test it out, it just changes the corow...so no visual on that yet...
+										self.align() // refresh the integers view
+									}) {
+										Text("House Row zero to the right")
+									}
+									Button(action: {
+										//guard row > 0 else { return } // The input is dimension checked by the view
+										self.matrix.houseDiag(row, col)
+										//self.matrix.lq() // test it out, it just changes the corow...so no visual on that yet...
+										self.align() // refresh the integers view
+									}) {
+										Text("House Row Diagonal")
+									}
+									Button(action: {
+										guard col - 1 >= 0 else { return } // The input is dimension checked by the view
+										guard row - 1 >= 0 else { return }
+										self.matrix.rowswap(row, row - 1)
+										self.matrix.givens(row: row - 1, Col0: col - 1, col1: col)
+										//self.matrix.lq() // test it out, it just changes the corow...so no visual on that yet...
+										self.align() // refresh the integers view
+									}) {
+										Text("Diag-up")
+									}
+								}
+						}
+					}
+				}
+			}
 			Grid(alignment: .center) {
 				ForEach(0..<integers.count, id: \.self) { row in
 					GridRow {
@@ -46,19 +87,30 @@ struct MatrixView: View {
 								.contextMenu {
 									Button(action: {
 										self.colzeroPass(cm: col, rm: row)
-										self.align()
+										self.align() // refresh the integers view
 									}) {
 										Text("colzeroPass")
 									}
 									Button(action: {
-										self.integers[row][col] = 0
+										self.matrix.rowneg(row)
+										self.align()
 									}) {
-										Text("Make Zero")
+										Text("Negate Row")
 									}
 									Button(action: {
-										()
+										guard row - 1 <= 0 else { return }
+										self.matrix.rowswap(row, row-1)
+										self.align() // refresh the integers view
 									}) {
-										Text("Function 2")
+										Text("Swap row up")
+									}
+									Button(action: {
+										//guard row > 0 else { return } // The input is dimension checked by the view
+										self.matrix.rowslide(row, 0)
+										self.matrix.lq() // test it out, it just changes the corow...so no visual on that yet...
+										self.align() // refresh the integers view
+									}) {
+										Text("Put row to top")
 									}
 								}
 						}
@@ -66,7 +118,9 @@ struct MatrixView: View {
 				}
 			} // end Grid
 			if let index = hoverIndex {
-				Text("Row: \(index.0), Column: \(index.1)")
+				let pi = self.integers[index.0][index.1]
+				Text("Row: \(index.0), Column: \(index.1) ------- \(pi)")
+//				Text("Row: \(index.0), Column: \(index.1)")
 			} else {
 				Text("Row: *, Column: *")
 			}
