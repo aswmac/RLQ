@@ -66,48 +66,20 @@ struct RLQ {
 	
 	/// zero across the row of the row matrix
 	mutating func houseRow(_ ir: Int, _ ic: Int) {
-		//print("row is", self.row)
-		//assert(self.row.dtype == .float32, "row dtype is not float32") // debug type check
-		//guard ir < self.rows, ic < self.cols else { return } // if need to safety check
-		// the norm squared of the self.row[ir] from column ic + 1 to the end
-		var nn: Float32 = dot(row1: ir, row2: ir, from: ic + 1, to: self.cols)
-		guard nn > machineEpsilon else { return }
-		let pivot: Float32 = self.row[ir,ic].item()
-		let temprow = self.row[ir][ic..<self.cols] // just the columns being mixed
-//		print("temprow.shape =", temprow.shape)
-//		print("temprow is", temprow)
-		var uu=nn
-		nn += pivot*pivot
-		let n = Float32.sqrt(nn) // n is the norm of row ir from column ic to the end
-		let a1: Float32 = abs(pivot)
-		let temp_ic: Float32
-		if a1 >= machineEpsilon {
-			let mu = pivot/a1 // complex phase of the first element (just .pm one for real value)
-			temp_ic = pivot + mu*n // first elem. of u vector + norm rotated by phase of first element
-		} else {
-			temp_ic = n // just the n if pivot is zero
-		}
-		uu += temp_ic*temp_ic
-		temprow[ic] = temp_ic*MLXArray(1.0)
-		print("temprow=", temprow)
-		let k = -2/uu
-		// now do the right multiplication (col-mix)
-//		print("temprow.shape =", temprow.shape)
-//		print("temprow is", temprow)
-		for i in 0..<self.rows {
-			let urow_i = dot(row1: ir, row2: i, from: ic, to: self.cols) // Do rows
-			let kr = k*urow_i
-			//print("kr=", kr)
-			let kt = kr*temprow
-			print("kt=", kt)
-			print("BEFORE", self.row[i])
-			self.row[i][ic..<self.cols] = self.row[i][ic..<self.cols] + kt //.reshaped([1,temprow.shape[0]])
-			print("AFTER", self.row[i])
-			let ucorow_i: Float32 = (sum(temprow*self.corow[i][ic..<self.cols])).item() // Do corows now
-			let kc = k*ucorow_i
-			self.corow[i][ic..<self.cols] += kc*temprow //.reshaped([1,temprow.shape[0]])
-		}
-		
+		let kx = self.row[ir][ic..<self.cols]
+	
+		//let nn = rmsNorm(kx, weight: .ones(like: kx), eps: machineEpsilon) // NO! this is x broadcast-divided by (L_2 / sqrt(dim))
+		let nn = MLXLinalg.norm(kx, ord: 2)
+		let squaredim = self.cols - ic
+		let e0 = eye(1, m: squaredim, k: 0, dtype: .float32)
+		let vk = kx - nn*e0
+		let vn = MLXLinalg.norm(vk, ord: 2, stream: .cpu) // MLX error: [linalg::svd] This op is not yet supported on the GPU. Explicitly pass a CPU stream to run it.
+		let v = vk/vn
+		let xx = outer(v, v) // outer product, (self.cols - ic - 1) square
+		let e = eye(squaredim, m: squaredim, k: 0, dtype: .float32)
+		let q = e - 2*xx
+		self.row[0..<self.rows,ic..<self.cols] = self.row[0..<self.rows,ic..<self.cols].matmul(q)
+		self.corow[0..<self.cols,ic..<self.cols] = self.corow[0..<self.cols,ic..<self.cols].matmul(q) // corow is cols by cols
 	}
 	
 	func dot(row1 r1: Int, row2 r2: Int, from c1: Int, to c2: Int) -> Float32 {
