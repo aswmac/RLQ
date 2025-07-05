@@ -35,6 +35,13 @@ struct MatrixView: View {
 							let t: Float = floaters[row][col]
 							//let c: String = "\(t, format: .scientific, significantDigits: 5)"
 							Text("\(t)") //t.formatted(.number.notation(.scientific).significantDigits(5))) GIVES PROBLEM!!
+								.onHover { isHovered in
+									if isHovered {
+										hoverIndex = (row, col)
+									} else {
+										hoverIndex = nil
+									}
+								}
 								.contextMenu {
 									Button(action: {
 										//guard row > 0 else { return } // The input is dimension checked by the view
@@ -61,6 +68,18 @@ struct MatrixView: View {
 										self.align() // refresh the integers view
 									}) {
 										Text("Diag-up")
+									}
+									Button(action: {
+										self.matrix.reddim = row
+										self.matrix.lq()
+										self.align() // refresh the integers/row view
+									}) {
+										Text("LQ")
+									}
+									Button(action: {
+										self.matrix.rowDown(from: row, col: col)
+									}) {
+										Text("Reduce down")
 									}
 								}
 						}
