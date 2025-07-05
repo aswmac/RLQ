@@ -4,10 +4,27 @@
 //
 //  Created 2025.06.27.140857
 //
+//  File: RLQ.swift (see rlq.py for original)
+//  Integer lattice (row) reduction.
+//  self.pid has integer values
+//  Row operations done on self.pid are also done on self.row, as self.row is
+//  meant to store the L form of the lower triangle in LQ factoring. ie L*L^T == P*P^T
+//  (where P is self.pid). That way any unitary column operations on L do not
+//  affect that invariant of L*L^T --> (LQ)*(LQ)^T == L(Q*Q^T)*L^T == L*L^T
+//  Q ---- self.corow stores the Q, but keeps it as Q^T so that the same operations
+//  can be done to self.corow without transposing concerns
+//
+//  TLDR: ••••••••••••    R = P*Q    •••••••••••• R and P KEEP SAME dot products between rows
+//  -----------------------------------------------------------------------------------------
+//  Row operations are integer only and unimodular--applied to pid and row only
+//  Col operations are Unitary only--applied to row and corow only
+//  corow stores the Q matrix of unitary, so that self.row = self.pid * self.corow, or R = P*Q
+
 
 import MLX
 import MLXLinalg
 internal import RealModule // for Float32.sqrt(nn)
+import Foundation // for hypot()
 
 struct RLQ {
 	var pid: MLXArray // Int
@@ -44,10 +61,10 @@ struct RLQ {
 	
 	mutating func lq(dim: Int? = nil) {
 		let dim = dim ?? self.reddim
-		for i in 0..<dim {
+		for i in 0..<dim { // For each row going down, find the smallest norm
 			var mn: Int?
 			var mni: Int?
-			for j in i..<dim {
+			for j in i..<dim { // TODO: want to do linalg norm like houserow's vn = (..., stream: .cpu)...?
 				let t: Int = (sum(pid[i..<dim]*pid[i..<dim])).item() // sum returns MLXArray, item() because want Int
 				if mn == nil || t < mn! {
 					mn = t
@@ -61,6 +78,16 @@ struct RLQ {
 		}
 		for i in dim..<self.rows { // now do the rest of the rows as well
 			self.houseRow(i, dim)
+		}
+	}
+	
+	mutating func houseDiag(_ ir: Int, _ ic: Int) {
+		var r = ir
+		var c = ic
+		while r < self.rows && c < self.cols {
+			self.houseRow(r, c)
+			r += 1
+			c += 1
 		}
 	}
 	
@@ -101,17 +128,34 @@ struct RLQ {
 		}
 		return integers
 	}
-		
+
+	func floatArray() -> [[Float]] {
+		var floaters: [[Float]] = []
+		let shape = self.row.shape
+		let rows = Int(shape[0])
+		let cols = Int(shape[1])
+		for row in 0..<rows {
+			floaters.append(Array(repeating: 0, count: cols))
+			for col in 0..<cols {
+				let element: Float = self.row[row][col].item()
+				floaters[row][col] = element
+			}
+		}
+		return floaters
+	}
+	
+	mutating func colzero(col cm: Int, row rm: Int) {
+		while self.colzeroPass(col: cm, row: rm) { continue }
+		if self.pid[rm, cm].item() < 0 { self.rowneg(rm) }
+	}
+	
+	// TODO: this is colzeroPass, but looking at row not pid, and keeping the row not moving it
+	mutating func rowDown(from row: Int, col: Int) {
+		return
+	}
+
 	mutating func colzeroPass(col: Int = 0, row: Int = 0) -> Bool {
 		// reduce using no divides per-se down the column
-//		guard row < self.pid.shape[0] else { // index bounds check
-//			return
-//		}
-//		guard col < self.pid.shape[1] else { // index bounds check
-//			return
-//		}
-		// get the minimum non-zero element at or below the row in the column
-		//let mnz = self.pid[row..<self.pid.shape[0]].min() // this does what...?
 		
 		// find the index for the minimum non-zero element at or below the row in the column
 		var mn: Int32 = Int32.max // big number, testing if 999999999 or Int32.max gives an error...
@@ -133,15 +177,16 @@ struct RLQ {
 			let den: Int32 = self.pid[row][col].item()
 			let kf = Float(2*num + den)/Float(2*den)
 			let k = Int32(kf.rounded(.down))
-			//let k = (2*num + den).di/(2*den) // TODO: num=-1 and den=1 should give 1 but does not...
-			print("num=\(num), den=\(den), k=\(k)")
-			if k == 0 { print("K HOW? r=\(r)") }
 			guard k != 0 else { continue }
 			change = true
-			//if r == minIndex { print("HOW!?!?!?") }
 			self.rowSubPlace(r, minusRow: row, times: k) // TODO: confirm rounding is to the neares for k = num/den
 		}
 		return change
+	}
+	
+	mutating func rowneg(_ r: Int) {
+		self.pid[r] = -self.pid[r]
+		self.row[r] = -self.row[r]
 	}
 	
 	mutating func rowSubPlace(_ r1: Int, minusRow r2: Int, times k: Int32) {
@@ -150,23 +195,47 @@ struct RLQ {
 		if r1 == r2 { return }
 		if k == 0 { return }
 		self.pid[r1] = self.pid[r1] - k*self.pid[r2]
-		
+		// now use the comatrix to recalculate the row (to keep precision in the face of lots of integer ops)
+		self.row[r1] = self.pid[r1].matmul(self.corow)//.transposed()) // transposed or not,not sure yet...
 	}
-	mutating func rowswap(_ r1: Int, _ r2: Int, preserveLQ: Bool = true) {
-		let temprow = self.pid[r1]
+	mutating func rowswap(_ r1: Int, _ r2: Int) { // }, preserveLQ: Bool = true) {
+		if r1 == r2 { return }
+		let temp_pid = self.pid[r1]
 		self.pid[r1] = self.pid[r2]
-		self.pid[r2] = temprow
+		self.pid[r2] = temp_pid
+		let temp_row = self.row[r1]
+		self.row[r1] = self.row[r2]
+		self.row[r2] = temp_row
 	}
 	
 	mutating func rowslide(_ r1: Int, _ r2: Int, preserveLQ: Bool = true) {
 		if r1 < r2 {
-			for i in stride(from: r1, to: r2, by: 1){
+			for i in stride(from: r1, to: r2, by: 1) {
 				self.rowswap(i, i+1)
+				if preserveLQ {
+					self.givens(row: i, Col0: i, col1: i + 1)
+				}
 			}
 		} else if r2 < r1 {
-			for i in stride(from: r1, to: r2, by: -1){
+			for i in stride(from: r1, to: r2, by: -1) {
+				if preserveLQ {
+					self.givens(row: i, Col0: i - 1, col1: i)
+				}
 				self.rowswap(i, i-1)
 			}
 		}
+	}
+	
+	mutating func givens(row r: Int, Col0 c0: Int, col1 c1: Int) {
+		// do givens on the column between columns c0 and c1 so that the value in row r column c1 is zero
+		assert(c1 == c0 + 1, "For now this function only works for adjacent columns (due to slicing knowledge of myself)")
+		let clam: Float = self.row[r, c0].item()
+		let slam: Float = self.row[r, c1].item()
+		let dis = hypot(clam, slam) // need import Foundation for hypot()
+		let c = clam/dis
+		let s = slam/dis
+		let q = MLXArray([c, -s, s, c], [2, 2])
+		self.row[0..<self.row.shape[0],c0..<c0+2] = self.row[0..<self.row.shape[0],c0..<c0+2].matmul(q)
+		self.corow[0..<self.corow.shape[0],c0..<c0+2] = self.corow[0..<self.corow.shape[0],c0..<c0+2].matmul(q)
 	}
 }
