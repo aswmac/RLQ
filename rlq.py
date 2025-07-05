@@ -893,53 +893,6 @@ class rlq(object):
       for j in range(i-1, -1, -1): self.xcol(j,j)
       self.reset() #TODO: inline this, and use return values of xcol() to avoid unneeded reset...
     return change
-  def dig(self, quality = 1.6):
-    ''' reduce the worst 2-dimensional sub-lattice.
-        Assumption of LQ form'''
-    drat = [abs(self.row[i][i]/self.row[i+1][i+1]) for i in range(self.rows-1)]
-    mx = max(drat)
-    while mx > quality:
-      mi = drat.index(mx)
-      #print(int(mx), end = " ")
-      #print(mi, end = " ")
-      t = self.row[mi + 1][mi]/self.row[mi][mi]
-      if abs(abs(t) - 0.5 ) < 1e-6: k = 0# if the possible magnitude change is negligible
-      else: k = int((t + 0.5)//1.0)
-      while k != 0:
-        if k > 765390:
-          print("--", k)
-          return
-        print(k, end=" ")
-        for g in self.colrange:# self.row_sub_place(mi+1, mi, k) without the row update
-          self.pid[mi+1][g] -= k*self.pid[mi][g]
-        self.row[mi+1][mi] = 0.0 # prepare to recalculate
-        for g in self.colrange:
-          self.row[mi+1][mi] += float(self.pid[mi + 1][g])*self.corow[g][mi]
-        for j in range(mi-1, -1, -1):    #<-- then also reduce the now changed values
-          self.row[mi + 1][j] = 0.0
-          for g in self.colrange:         #<-- make precise the pertinent row value
-            self.row[mi+1][j] += float(self.pid[mi+1][g])*self.corow[g][j]
-          t = self.row[mi+1][j]/self.row[j][j]
-          if abs(abs(t) - 0.5) < 1e-6: continue # if the reduction is negligible
-          k = int((t + 0.5)//1.0)
-          if k == 0: continue
-          for g in self.colrange:
-            self.pid[mi+1][g] -= k*self.pid[j][g]
-          self.row[mi + 1][j] = 0.0
-          for g in self.colrange:         #<-- re-calculate the row value
-            self.row[mi+1][j] += float(self.pid[mi+1][g])*self.corow[g][j]
-        if self.row[mi][mi]**2 > self.row[mi + 1][mi]**2 + self.row[mi + 1][mi + 1]**2:
-          self.givens(mi + 1, mi, mi+1)
-          self.pid[mi], self.pid[mi+1] = self.pid[mi+1], self.pid[mi] # TODO: implement indexed LQ
-          self.row[mi], self.row[mi+1] = self.row[mi+1], self.row[mi]
-          t = self.row[mi + 1][mi]/self.row[mi][mi]
-          if abs(abs(t) - 0.5 ) < 1e-6: k = 0# if the possible magnitude change is negligible
-          else: k = int((t + 0.5)//1.0)
-        else: k=0
-      if mi > 0: drat[mi - 1] = abs(self.row[mi-1][mi-1]/self.row[mi][mi])
-      drat[mi] = abs(self.row[mi][mi]/self.row[mi+1][mi+1])
-      if mi < self.rows - 2:drat[mi + 1] = abs(self.row[mi + 1][mi + 1]/self.row[mi + 2][mi + 2])
-      mx = max(drat)
   def digest(self, start=0):
     ''' look at adjacent diagonal values of the LQ form and mix for larger values at the lower end.
         Assumption: row[] is in lq form'''
