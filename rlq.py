@@ -567,23 +567,6 @@ class rlq(object):
       for g in self.colrange:
         self.temprow[g] -= m*self.row[i][g]
     return self.tempcol[:]
-  def rowsort(self,y=None,dim=None, key = lambda x: x):
-    '''row sort the cubint, based on elements of y'''
-    if dim==None: dim=self.reddim
-    if y==None: #y is rownorms
-      t=self.norm() # self.tempcol now has the rownorms
-      y = []
-      for i in range(dim):
-        y.append(self.tempcol[i])
-    order=list(range(dim))
-    reverse=list(range(dim))
-    order.sort(key=lambda x: key(y[x])) #get indexes of sorted order
-    reverse.sort(key=lambda x:order[x])
-    for i in range(dim):# perform the permutation,
-      t=reverse.index(i)      # order is indexes after the sort,
-      self.rowswap(i,t)       # so reverse gives the permutation
-      reverse[i],reverse[t]=reverse[t],reverse[i]
-      #self.tempcol[i], self.tempcol[t] = self.tempcol[t], self.tempcol[i] # sort tempcol also to use if want
   def colzero_pass(self,cm=0,rm=None):
     ''' reduce using no divides per-se down the column from rm index if given, from index 0 if rm not given'''
     if rm==None: rm=0
