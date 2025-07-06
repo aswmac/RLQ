@@ -65,6 +65,7 @@ struct RLQ {
 	var reddim: Int = 0
 	private let machineEpsilon: Float32 = 1.0e-15 // If just Float, then Float64...MLX ERROR
 	private let driftThreshold: Float32 = 1.0e-4 // tolerance of error aggregated, triggers a re-alignment doing R = L*Q
+	private let quality: Float32 = 1.55 // min for all assumption possible is 1.15470025 ie 2/√3
 	private var driftRow: Float32 = 1.0e-7 // The track of row operations errors that might want a re-alignment like R = LQ or R_i = ...
 	
 	init(rows: Int, cols: Int) {
@@ -151,34 +152,34 @@ struct RLQ {
 	mutating func digest(start: Int = 0) -> Bool {
 		// look at adjacent diagonal values of the LQ form and mix for larger values at the lower end.
 		// Assumption: row is in lq form
-		let diagEpsilon: Float32 = 1e-6 // or machineEpsilon? or variable input to func?... used to test changes
+		// max value if want always possible is √3/2 = 0.8660254037844386, ie like   | 1    0    |  or  | 1.1155    0  |
+		// 2/√3 = 1.11547005383792517                                                | •  0.866  |      |   •       1  |
+		let diagEpsilon: Float = 1e-6 // or machineEpsilon? or variable input to func?... used to test changes
 		var change: Bool = false
 		var i = start + 1
+		if i >= self.reddim {
+			debugPrint("digest() called with low reddim value, adjusting reddim from \(self.reddim) to \(i+1)")
+			self.reddim = i+1
+		}
 		while i < self.reddim {
 			let a: Float32 = self.row[i-1][i-1].item()    //<---  | a 0 |
 			let e: Float32 = self.row[i][i-1].item()      //<---  | e f |
 			let f: Float32 = self.row[i][i].item()        //<--- variables renamed only for reading and typing convenience.
-			if abs(a) < diagEpsilon { i += 1; continue }
-			let t = e/a
-			if abs(abs(t) - 0.5) < diagEpsilon { i += 1; continue }
-			let k = Int32(t.rounded(.toNearestOrAwayFromZero))
-			if k == 0 { i += 1; continue }
-			change = true
-			self.rowSubPlace(i, minusRow: i - 1, times: k) // if e gets reduced by a
-			for j in stride(from: i - 2, to: -1, by: -1) {
-				let aj: Float32 = self.row[j][j].item()      //<---  | a 0 |
-				let ej: Float32 = self.row[i][j].item()      //<---  | e f |
-				let tj = ej/aj
-				if abs(abs(tj) - 0.5) < diagEpsilon { continue } // if the reduction is negligible
-				let kj: Int32 = Int32(tj.rounded(.toNearestOrAwayFromZero))
-				if kj == 0 { continue } // if there is no reduction at all
-				self.rowSubPlace(i, minusRow: j, times: kj)
+			if abs(a) < diagEpsilon { i += 1; continue }  // way small like epsilon, a zero row likely
+			if abs(a/f) < self.quality { i += 1; continue } // here the diagonal is reduced up to quality already
+			let zchange = self.zrow(rm: i) // This will reduce e, but also those to the left of e
+			if zchange == false {
+				debugPrint("digest(): The diagonal values (at i = \(i)) looked good for reduction, but no such reduction was found!!")
+				i += 1;
+				continue
 			}
+			change = true
 			let new_e: Float32 = self.row[i][i-1].item()
 			if a*a - (new_e*new_e + f*f) > diagEpsilon { // if the reductions found a significantly smaller "upper-low" value
 				change = true
 				self.givens(row: i, Col0: i-1, col1: i) // inlline of rowSlide which preserves the LQ form
 				self.rowswap(i, i - 1)
+				continue // do it again since it did a thing
 			} else {
 				i += 1
 			}
@@ -218,6 +219,46 @@ struct RLQ {
 			//debugPrint("rred iteration \(count), dratio: \(dratio), rred: \(rred)")
 		}
 		return count
+	}
+	
+	mutating func digallinc(_ quality: Float32 = 1.65) -> Int {
+		let saveDim = self.reddim
+		self.reddim = 2
+		var count = self.digall(quality)
+		self.reddim = 3
+		while self.reddim <= self.rows {
+			_ = self.zrow(rm: self.reddim - 1) // call once, it does not iterate anything
+			count += self.digall(quality)
+			self.reddim += 1
+		}
+		self.reddim = saveDim
+		return count
+	}
+	
+	mutating func zrow(rm: Int, start: Int = 0) -> Bool {
+		// target reduce the row. Use start to limit which rows to use for reducing
+		// ASSUMPTION: row[] in in lq form.
+		let zedEpsilon: Float = 1e-6 // avoid small components and zero division
+		let d0: Float32 = inner(self.row[rm], self.row[rm]).item()
+		var change: Bool = false
+		//var d0: Int32 = d.item() // get the rownorm (squared) of row rm
+		for i in stride(from: rm - 1, to: start - 1, by: -1) {
+			let den: Float32 = self.row[i,i].item()
+			if abs(den) < zedEpsilon { continue }  // ignore small components
+			let num: Float32 = self.row[rm, i].item()
+			let t = num/den
+			if abs(abs(t) - 0.5) < zedEpsilon { continue } // ignore small reduction amounts
+			let k: Int32 = Int32(t.rounded(.toNearestOrAwayFromZero))
+			if k == 0 { continue } // if there is no reduction
+			self.rowSubPlace(rm, minusRow: i, times: k)
+			change = true
+		}
+		if change {
+			let d1: Float32 = inner(self.row[rm], self.row[rm]).item()
+			return d1 < d0
+		} else {
+			return false
+		}
 	}
 	
 	mutating func houseDiag(_ ir: Int, _ ic: Int) {
@@ -306,7 +347,8 @@ struct RLQ {
 	}
 	
 	// like colzeroPass, but looking at row not pid, and keeping the row not moving it
-	mutating func rowDown(from row: Int, col: Int) -> Bool {
+	mutating func zcol(from row: Int, col: Int) -> Bool {
+		// reduce down using the row elements in the column as the guide
 		// no search for minimum, just use this element and reduce below
 		let den: Float32 = self.row[row][col].item()
 		guard abs(den) > machineEpsilon else { return false }
@@ -325,11 +367,12 @@ struct RLQ {
 		return change
 	}
 	
-	mutating func reduceL(to diag: Int) -> [Int] {
+	mutating func reduceUnderL(to diag: Int) -> [Int] {
+		/// Do all zrow like actions but for all under the diagonal up to index diag
 		// matrix view guards index limits
 		var reduceIndices: [Int] = []
 		for i in stride(from: self.rows - 1, to: -1, by: -1) { // for i in self.rows where i != diag { // can do where in a for loop...?
-			if self.rowDown(from: i, col: i) {
+			if self.zcol(from: i, col: i) {
 				reduceIndices.append(i)
 			}
 		}
