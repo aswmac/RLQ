@@ -20,13 +20,43 @@
 //  Col operations are Unitary only--applied to row and corow only
 //  corow stores the Q matrix of unitary, so that self.row = self.pid * self.corow, or R = P*Q
 
+//# CALL DEPENDENCY
+//# ----------------------------------------------------------------------
+//# -----------main functions---------------------------------------------
+//# ----------------------------------------------------------------------
+//# init()      --> NONE
+//# house_row()     --> NONE
+//# setnull()       --> align()
+//# digallinc()     --> digall(), zrow()
+//# digall()        --> digest(), reset(), lq() (lq implied: input form)
+//# zrow()          --> house_row()
+//# digest()        --> givens()
+//# reset()         --> NONE
+//# lq()            --> house_row()
+//# givens()        --> NONE
+//# ----------------------------------------------------------------------
+//# -----------finishing graph enumeration functions----------------------
+//# ----------------------------------------------------------------------
+//# ered()          --> enum(), rowswap(), rownorm()
+//# enum()          --> house_row(), row_sub_place(), rowswap(), colswap()
+//# row_sub_place() --> NONE
+//# rowswap()       --> NONE
+//# colswap()       --> NONE
+//# ----------------------------------------------------------------------
+//# ------------other useful functions------------------------------------
+//# ----------------------------------------------------------------------
+//# rownorm()       --> NONE
+//# crestmax()      --> house_row(), rowswap(), row_sub_place(), givens()
+//# xrows()         --> house_row(), xcol()
+//# xcol()          --> NONE
 
 import MLX
 import MLXLinalg
+import MLXRandom
 internal import RealModule // for Float32.sqrt(nn)
 import Foundation // for hypot()
 
-// TODO: use driftCount, or drift (error estimations on row) to batch re-alignments like row[i] = pid[i].matmul(corow)
+
 // TODO: also (like if take in high bits truncated of large numbers) can do error analysis for the pid...
 struct RLQ {
 	var pid: MLXArray // Int
@@ -36,11 +66,15 @@ struct RLQ {
 	private let machineEpsilon: Float32 = 1.0e-15 // If just Float, then Float64...MLX ERROR
 	private let driftThreshold: Float32 = 1.0e-4 // tolerance of error aggregated, triggers a re-alignment doing R = L*Q
 	private var driftRow: Float32 = 1.0e-7 // The track of row operations errors that might want a re-alignment like R = LQ or R_i = ...
+	
 	init(rows: Int, cols: Int) {
 		self.pid = MLXArray.eye(rows, m: cols, k: 0, dtype: .int32) // set the diagonal elements to unity
 		self.row = MLXArray.eye(rows, m: cols, k: 0, dtype: .float32) // set the diagonal elements to unity
 		self.corow = MLXArray.eye(cols, m: cols, k: 0, dtype: .float32)
 		driftRow = machineEpsilon  // instead of always doing row[i] = pid[i] @ Q, batch them with a count
+		assert(self.pid.dtype == .int32, "main init(): pid dtype is not int32")
+		assert(self.corow.dtype == .float32, "main init(): corow dtype is not float32")
+		assert(self.row.dtype == .float32, "main init(): row dtype is not float32")
 	}
 	
 	var rows: Int { return Int(self.pid.shape[0]) }
@@ -53,16 +87,43 @@ struct RLQ {
 		self.row = self.pid.asType(.float32)
 		self.corow = MLXArray.eye(cols, m: cols, k: 0, dtype: .float32)
 		driftRow = machineEpsilon // Use the count of operations on a row (or maybe a float representing err?)
-		assert(self.corow.dtype == .float32, "corow dtype is not float32")
-		assert(self.row.dtype == .float32, "row dtype is not float32")
+		assert(self.pid.dtype == .int32, "MLX array init(): pid dtype is not int32")
+		assert(self.corow.dtype == .float32, "MLX array init(): corow dtype is not float32")
+		assert(self.row.dtype == .float32, "rMLX array init(): ow dtype is not float32")
 	}
 	
 	mutating func reset(reorder: Bool = true) {
-		self.row = self.pid.asMLXArray(dtype: .float32) // COPY-CONVERT the integers to floats
+		self.row = self.pid.asType(.float32) // COPY-CONVERT the integers to floats, self.pid.asMLXArray(dtype: .float32) NOT WORK
+		assert(self.row.dtype == .float32, "reset(): row dtype is not float32")
+		//debugPrint("Should contain identity: row = \(self.row)")
 		self.driftRow = machineEpsilon
 		self.corow = MLXArray.eye(cols, m: cols, k: 0, dtype: .float32)
-		debugPrint("reset() gives pid[0,1] = \(self.pid[0,1])")
+		//debugPrint("reset() before reorder = \(reorder) gives corow = \(self.corow)")
 		if reorder { self.lq() }
+		assert(self.pid.dtype == .int32, "reset(): pid dtype is not int32")
+		assert(self.corow.dtype == .float32, "reset(): corow dtype is not float32")
+		
+	}
+	
+	mutating func setnull(x: MLXArray) {
+		assert(x.count <= self.rows, "RLQ.setnull(x): x too long to fit")
+		let e = MLXArray.eye(rows, m: rows, k: 0, dtype: .int32)
+		if x.count < self.rows { // pad the x input if necessary
+			let xx = concatenated([x.reshaped(-1,1), MLXArray.zeros([-1,self.rows-x.count])], axis: 0) // xx a column vector now
+			self.pid = concatenated([xx,e], axis: 1) // set pid to the column vector augmented with the identity matrix
+		} else {
+			self.pid = concatenated([x.reshaped([-1,1]),e], axis: 1)
+			//debugPrint("Should contain identity: pic = \(self.pid)")
+		}
+		self.reset(reorder: false) // reset and perform the LQ factoring
+	}
+	
+	mutating func randNull() {
+		let x = MLXRandom.randInt(low: -100, high: 100, [self.rows]) // could do [-1, self.rows] I think to make column vector, but setnull takes row vec
+		//debugPrint("setting random values with x = \(x)")
+		self.setnull(x: x)
+		//debugPrint("randNull(): pid = \(self.pid)")
+		//debugPrint("randNull(): row = \(self.row)")
 	}
 	
 	mutating func lq(dim: Int? = nil) {
@@ -70,7 +131,7 @@ struct RLQ {
 		for i in 0..<dim { // For each row going down, find the smallest norm
 			var mn: Int?
 			var mni: Int?
-			for j in i..<dim { // TODO: want to do linalg norm like houserow's vn = (..., stream: .cpu)...?
+			for j in i..<dim { // TODO: ? want to do linalg norm like houserow's vn = (..., stream: .cpu)...? (TEST IT SOMETIME...)
 				let t: Int = (sum(pid[i..<dim]*pid[i..<dim])).item() // sum returns MLXArray, item() because want Int
 				if mn == nil || t < mn! {
 					mn = t
@@ -130,7 +191,7 @@ struct RLQ {
 		let digallEpsilon: Float32 = 1e-6
 		var count = 0
 		var rred = true
-		debugPrint("Starting rred while loop...")
+		//debugPrint("Starting rred while loop...")
 		while rred {
 			rred = false
 			//self.reset(reorder: true) // reset(true) includes lq()
@@ -142,7 +203,7 @@ struct RLQ {
 				dratio.append(abs(f) < digallEpsilon ? 0.0 : abs(a)/abs(f))
 			}
 			var dmax = dratio.max()!
-			debugPrint("dmax initial: \(dmax)")
+			//debugPrint("dmax initial: \(dmax)")
 			while dmax > quality {
 				while self.digest() { continue }
 				self.reset(reorder: true)
@@ -152,9 +213,9 @@ struct RLQ {
 				}
 				count += 1
 				dmax = dratio.max()!
-				debugPrint("at count \(count) dmax: \(dmax)")
+				//debugPrint("at count \(count) dmax: \(dmax)")
 			}
-			debugPrint("rred iteration \(count), dratio: \(dratio), rred: \(rred)")
+			//debugPrint("rred iteration \(count), dratio: \(dratio), rred: \(rred)")
 		}
 		return count
 	}
@@ -171,20 +232,39 @@ struct RLQ {
 	
 	/// zero across the row of the row matrix
 	mutating func houseRow(_ ir: Int, _ ic: Int) {
+		//debugPrint("start: row[0] = \(self.row[0])")
+		//debugPrint("start: pid[0] = \(self.pid[0])")
 		let kx = self.row[ir][ic..<self.cols]
-	
+		//debugPrint("shape of kx is \(kx.shape)")
 		//let nn = rmsNorm(kx, weight: .ones(like: kx), eps: machineEpsilon) // NO! this is x broadcast-divided by (L_2 / sqrt(dim))
 		let nn = MLXLinalg.norm(kx, ord: 2)
 		let squaredim = self.cols - ic
 		let e0 = eye(1, m: squaredim, k: 0, dtype: .float32)
 		let vk = kx - nn*e0
+		//debugPrint("01: row[0] = \(self.row[0])")
+		//debugPrint("01: pid[0] = \(self.pid[0])")
 		let vn = MLXLinalg.norm(vk, ord: 2, stream: .cpu) // MLX error: [linalg::svd] This op is not yet supported on the GPU. Explicitly pass a CPU stream to run it.
 		let v = vk/vn
 		let xx = outer(v, v) // outer product, (self.cols - ic - 1) square
+		//debugPrint("02: row[0] = \(self.row[0])")
+		//debugPrint("02: pid[0] = \(self.pid[0])")
 		let e = eye(squaredim, m: squaredim, k: 0, dtype: .float32)
 		let q = e - 2*xx
-		self.row[0..<self.rows,ic..<self.cols] = self.row[0..<self.rows,ic..<self.cols].matmul(q)
+		//debugPrint("03: row[0] = \(self.row[0])")
+		//debugPrint("03: pid[0] = \(self.pid[0])")
+		//debugPrint("shape of q is \(q.shape)")
+		let temprow = self.row[0..<self.rows,ic..<self.cols]
+		//debugPrint("temprow is \(temprow)")
+		let newrow = temprow.matmul(q)
+		//debugPrint("newrow is \(newrow)")
+		//debugPrint("shape of newrow is \(newrow.shape)")
+		//debugPrint("row[0] (again) is \(self.row[0])")
+		self.row[0..<self.rows,ic..<self.cols] = newrow
+		//debugPrint("04: row[0] = \(self.row[0])")
+		//debugPrint("04: pid[0] = \(self.pid[0])")
 		self.corow[0..<self.cols,ic..<self.cols] = self.corow[0..<self.cols,ic..<self.cols].matmul(q) // corow is cols by cols
+		//debugPrint("end: row[0] = \(self.row[0])")
+		//debugPrint("end: pid[0] = \(self.pid[0])")
 	}
 	
 	func dot(row1 r1: Int, row2 r2: Int, from c1: Int, to c2: Int) -> Float32 {
@@ -194,26 +274,26 @@ struct RLQ {
 	
 	func intArray() -> [[Int]] {
 		var integers: [[Int]] = []
-		let rows = Int(self.rows)
-		let cols = Int(self.cols)
-		for row in 0..<rows {
-			integers.append(Array(repeating: 0, count: cols))
-			for col in 0..<cols {
-				let element: Int = self.pid[row][col].item()
+		let rrows = Int(self.rows)
+		let ccols = Int(self.cols)
+		for row in 0..<rrows {
+			integers.append(Array(repeating: 0, count: ccols))
+			for col in 0..<ccols {
+				let element: Int = self.pid[row, col].item()
 				integers[row][col] = element
 			}
 		}
 		return integers
 	}
 
-	func floatArray() -> [[Float]] {
-		var floaters: [[Float]] = []
-		let rows = Int(self.rows)
-		let cols = Int(self.cols)
-		for row in 0..<rows {
-			floaters.append(Array(repeating: 0, count: cols))
-			for col in 0..<cols {
-				let element: Float = self.row[row][col].item()
+	func floatArray() -> [[Float32]] {
+		var floaters: [[Float32]] = []
+		let rrows = Int(self.rows)
+		let ccols = Int(self.cols)
+		for row in 0..<rrows {
+			floaters.append(Array(repeating: 0, count: ccols))
+			for col in 0..<ccols {
+				let element: Float32 = self.row[row, col].item()
 				floaters[row][col] = element
 			}
 		}
@@ -277,11 +357,11 @@ struct RLQ {
 		for r in (row+1)..<self.rows {
 			let num: Int32 = self.pid[r][col].item()
 			let den: Int32 = self.pid[row][col].item()
-			let kf = Float(2*num + den)/Float(2*den)
-			let k = Int32(kf.rounded(.down))
+			let kf = Float(2*num + den)/Float(2*den) // Seems to work--it zeros the column
+			let k = Int32(kf.rounded(.down)) // with this round down of course
 			guard k != 0 else { continue }
 			change = true
-			self.rowSubPlace(r, minusRow: row, times: k) // TODO: confirm rounding is to the neares for k = num/den
+			self.rowSubPlace(r, minusRow: row, times: k)
 		}
 		return change
 	}
@@ -297,11 +377,11 @@ struct RLQ {
 		if r1 == r2 { return }
 		if k == 0 { return }
 		self.pid[r1] = self.pid[r1] - k*self.pid[r2]
-		// now use the comatrix to recalculate the row (to keep precision in the face of lots of integer ops)
-		self.row[r1] = self.pid[r1].matmul(self.corow)//.transposed()) // transposed or not,not sure yet...
+		self.row[r1] = self.row[r1] - k*self.row[r2]
 		self.driftRow += abs(Float32(k)*self.driftRow) // keep track of how errors are multiplying (aggregated for all rows, as batch update ...)
 		if self.driftRow > self.driftThreshold {
-			self.row = self.pid.matmul(self.corow) // re-align/restore for errors
+			self.row = self.pid.asType(.float32)
+			self.row = self.row.matmul(self.corow) // re-align/restore for errors
 			self.driftRow = machineEpsilon // and reset the error counter
 		}
 	}
