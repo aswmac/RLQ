@@ -77,9 +77,19 @@ struct MatrixView: View {
 										Text("LQ")
 									}
 									Button(action: {
-										self.matrix.rowDown(from: row, col: col)
+										_ = self.matrix.reduceUnderL(to: row)
+										self.align()
 									}) {
-										Text("Reduce down")
+										Text("Reduce diagonal")
+									}
+									Button(action: {
+										for i in 0...row {
+											while self.matrix.digest(i) { continue }
+											_ = self.matrix.reduceUnderL(to: i)
+										}
+										self.align()
+									}) {
+										Text("dig-loop")
 									}
 								}
 						}
@@ -117,7 +127,7 @@ struct MatrixView: View {
 										Text("Negate Row")
 									}
 									Button(action: {
-										guard row - 1 <= 0 else { return }
+										guard row - 1 >= 0 else { return }
 										self.matrix.rowswap(row, row-1)
 										self.align() // refresh the integers view
 									}) {
@@ -130,6 +140,18 @@ struct MatrixView: View {
 										self.align() // refresh the integers view
 									}) {
 										Text("Put row to top")
+									}
+									Button(action: {
+										self.matrix.randNull()
+										self.align()
+									}) {
+										Text("Randomize entire matrix null column")
+									}
+									Button(action: {
+										_ = self.matrix.zrow(rm: row)
+										self.align()
+									}) {
+										Text("Reduce row using LQ form")
 									}
 								}
 						}
