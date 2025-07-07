@@ -485,4 +485,27 @@ struct RLQ {
 		self.row[0..<self.row.shape[0],c0..<c0+2] = self.row[0..<self.row.shape[0],c0..<c0+2].matmul(q)
 		self.corow[0..<self.corow.shape[0],c0..<c0+2] = self.corow[0..<self.corow.shape[0],c0..<c0+2].matmul(q)
 	}
+	
+	private func unitDot(_ r1: Int, _ r2: Int) -> Float {
+		let n1 = MLXLinalg.norm(self.row[r1], ord: 2)
+		let n2 = MLXLinalg.norm(self.row[r2], ord: 2)
+		let u1 = self.row[r1]/n1
+		let u2 = self.row[r2]/n2
+		return inner(u1, u2).item()
+	}
+	
+	func unitDotValues() -> MLXArray {
+		let N = MLXLinalg.norm(self.row, ord: 2, axis: 1) // The norms of the rows
+		//debugPrint("Dots: \(N)")
+		let UR = self.row/N.reshaped([-1, 1]) // The rows as unit vectors
+		//debugPrint("UR: \(UR)")
+		let UUT = inner(UR, UR)
+		let e = MLXArray.eye(self.rows, k: 0, dtype: UUT.dtype)
+		let OffDiag = UUT - e
+		//debugPrint("UUT: \(UUT)")
+		let maxIndex = argMax(abs(OffDiag)) // the index in the flattened array of the largest value
+		print("Max off diagonal: \(OffDiag.flattened()[maxIndex])")
+		print("at (\(maxIndex)))")
+		return UUT
+	}
 }
