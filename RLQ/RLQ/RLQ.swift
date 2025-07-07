@@ -167,9 +167,9 @@ struct RLQ {
 		}
 		var i = start + 1 //
 		while i < self.reddim {
-			let a: Float32 = self.row[i-1][i-1].item()    //<---  | a 0 |
-			let e: Float32 = self.row[i][i-1].item()    //<---  | e f |
-			let f: Float32 = self.row[i][i].item()        //<--- variables renamed only for reading and typing convenience.
+			let a: Float32 = self.row[i-1, i-1].item()    //<---  | a 0 |
+			let e: Float32 = self.row[i, i-1].item()    //<---  | e f |
+			let f: Float32 = self.row[i, i].item()        //<--- variables renamed only for reading and typing convenience.
 			if abs(a) < diagEpsilon { i += 1; continue }  // way small like epsilon, a zero row likely
 			let test = abs(a/f)
 			if test < self.qualityMIN { i += 1; continue } // here the diagonal is reduced up to quality already
@@ -190,7 +190,7 @@ struct RLQ {
 				}
 			}
 			change = true
-			let new_e: Float32 = self.row[i][i-1].item()
+			let new_e: Float32 = self.row[i, i-1].item()
 			if a*a - (new_e*new_e + f*f) > diagEpsilon { // if the reductions found a significantly smaller "upper-low" value
 				change = true
 				self.givens(row: i, Col0: i-1, col1: i) // inlline of rowSlide which preserves the LQ form
@@ -203,7 +203,7 @@ struct RLQ {
 		return change
 	}
 	
-	mutating func digall(_ quality: Float32 = 1.65) -> Int {
+	mutating func digall() -> Int {
 		guard self.reddim > 1 else { return 0 } // otherwise dratio would be empty and max would be nil!
 		let digallEpsilon: Float32 = 1e-6
 		var count = 0
@@ -214,18 +214,18 @@ struct RLQ {
 			//self.reset(reorder: true) // reset(true) includes lq()
 			var dratio: [Float32] = []
 			for i in 1..<self.reddim {
-				let a: Float32 = self.row[i-1][i-1].item()    //<---  | a 0 |
-				//let e: Float32 = self.row[i][i-1].item()    //<---  | e f |
-				let f: Float32 = self.row[i][i].item()        //<--- variables renamed for convenience.
+				let a: Float32 = self.row[i-1, i-1].item()    //<---  | a 0 |
+				//let e: Float32 = self.row[i, i-1].item()    //<---  | e f |
+				let f: Float32 = self.row[i, i].item()        //<--- variables renamed for convenience.
 				dratio.append(abs(f) < digallEpsilon ? 0.0 : abs(a)/abs(f))
 			}
 			var dmax = dratio.max()!
 			//debugPrint("dmax initial: \(dmax)")
-			while dmax > quality {
+			while dmax > self.qualityMIN {
 				while self.digest(self.reddim - 1) { continue }
 				self.reset(reorder: true)
 				for i in 1..<self.reddim {
-					if abs(self.row[i][i].item()) < digallEpsilon { dratio[i - 1] = 0.0 }
+					if abs(self.row[i, i].item()) < digallEpsilon { dratio[i - 1] = 0.0 }
 					else { dratio[i - 1] = abs(self.row[i-1, i-1].item()/self.row[i, i].item()) }
 				}
 				count += 1
@@ -237,14 +237,14 @@ struct RLQ {
 		return count
 	}
 	
-	mutating func digallinc(_ quality: Float32 = 1.65) -> Int {
+	mutating func digallinc() -> Int {
 		let saveDim = self.reddim
 		self.reddim = 2
-		var count = self.digall(quality)
+		var count = self.digall()
 		self.reddim = 3
 		while self.reddim <= self.rows {
 			_ = self.zrow(rm: self.reddim - 1) // call once, it does not iterate anything
-			count += self.digall(quality)
+			count += self.digall()
 			self.reddim += 1
 		}
 		self.reddim = saveDim
@@ -290,7 +290,7 @@ struct RLQ {
 	mutating func houseRow(_ ir: Int, _ ic: Int) {
 		//debugPrint("start: row[0] = \(self.row[0])")
 		//debugPrint("start: pid[0] = \(self.pid[0])")
-		let kx = self.row[ir][ic..<self.cols]
+		let kx = self.row[ir, ic..<self.cols]
 		//debugPrint("shape of kx is \(kx.shape)")
 		//let nn = rmsNorm(kx, weight: .ones(like: kx), eps: machineEpsilon) // NO! this is x broadcast-divided by (L_2 / sqrt(dim))
 		let nn = MLXLinalg.norm(kx, ord: 2)
@@ -324,7 +324,7 @@ struct RLQ {
 	}
 	
 	func dot(row1 r1: Int, row2 r2: Int, from c1: Int, to c2: Int) -> Float32 {
-		let urow_i: Float32 = (sum(self.row[r1][c1..<c2]*self.row[r2][c1..<c2])).item()
+		let urow_i: Float32 = (sum(self.row[r1, c1..<c2]*self.row[r2, c1..<c2])).item()
 		return urow_i
 	}
 	
@@ -365,12 +365,12 @@ struct RLQ {
 	mutating func zcol(from row: Int, col: Int) -> Bool {
 		// reduce down using the row elements in the column as the guide
 		// no search for minimum, just use this element and reduce below
-		let den: Float32 = self.row[row][col].item()
+		let den: Float32 = self.row[row, col].item()
 		guard abs(den) > machineEpsilon else { return false }
 		var change: Bool = false
 		for r in row+1..<self.rows {
 			//debugPrint("checking \(r)")
-			let num: Float32 = self.row[r][col].item()
+			let num: Float32 = self.row[r, col].item()
 			let kf: Float32 = (2*num + den)/(2*den)
 			let k: Int32 = Int32(kf.rounded(.down))
 			//debugPrint("num \(num), den \(den), k \(k)")
@@ -402,7 +402,7 @@ struct RLQ {
 		var mn: Int32 = Int32.max // big number, testing if 999999999 or Int32.max gives an error...
 		var mni: Int?
 		for r in row..<self.rows {
-			let p: Int32 = abs(self.pid[r][col].item())
+			let p: Int32 = abs(self.pid[r, col].item())
 			if p > 0 && (mni == nil || p < mn) {
 				mn = p
 				mni = r
@@ -414,8 +414,8 @@ struct RLQ {
 		var change: Bool = false
 
 		for r in (row+1)..<self.rows {
-			let num: Int32 = self.pid[r][col].item()
-			let den: Int32 = self.pid[row][col].item()
+			let num: Int32 = self.pid[r, col].item()
+			let den: Int32 = self.pid[row, col].item()
 			let kf = Float(2*num + den)/Float(2*den) // Seems to work--it zeros the column
 			let k = Int32(kf.rounded(.down)) // with this round down of course
 			guard k != 0 else { continue }
@@ -428,6 +428,12 @@ struct RLQ {
 	mutating func rowneg(_ r: Int) {
 		self.pid[r] = -self.pid[r]
 		self.row[r] = -self.row[r]
+	}
+	
+	// MARK: row[0..<m][c] = -row[0..<m][c] seems not to do anything, need to index like [0..<m, c]!!!
+	mutating func colneg(_ c: Int) {
+		self.row[0..<self.rows, c] = -self.row[0..<self.rows, c]
+		self.corow[0..<self.rows, c] = -self.corow[0..<self.rows, c]
 	}
 	
 	mutating func rowSubPlace(_ r1: Int, minusRow r2: Int, times k: Int32) {
@@ -453,6 +459,42 @@ struct RLQ {
 		let temp_row = self.row[r1]
 		self.row[r1] = self.row[r2]
 		self.row[r2] = temp_row
+	}
+	
+	mutating func diagSwap(_ r1: Int, _ r2: Int) {
+		if r1 == r2 { return }
+		self.diagSlide(from: r1, to: r2) // now r2 is in r2 - 1
+		if r1 - r2 > 1 { // if the slide is down but needs more than one to complete the swap
+			self.diagSlide(from: r1 + 1, to: r2) // otherwise put it in r1 to complete the swap
+		}
+		if r2 - r1 > 1 { // if the slide is up but needs more than one to complete the swap
+			self.diagSlide(from: r2 - 1, to: r1) // otherwise put it in r1 to complete the swap
+		}
+	}
+	
+	mutating func diagSlide(from r1: Int, to r2: Int) {
+		if r1 == r2 { return }
+		if r1 > r2 {
+			for r in stride(from: r1, to: r2, by: -1) {
+				self.rowswap(r, r - 1)
+				self.givens(row: r - 1, Col0: r - 1, col1: r)
+			}
+		} else { // here r1 < r2
+			for r in r1..<r2 { // I wonder if the swift or mlx compiler is smart enough to batch
+				self.givens(row: r + 1, Col0: r, col1: r + 1) // the rowstuff separate from the colstuff
+				self.rowswap(r + 1, r) // TODO: consider batching row separate from colstuff and speedtest it
+			}
+		}
+	}
+	
+	mutating func colswap(_ c1: Int, _ c2: Int) {
+		if c1 == c2 { return }
+		let temp_pid = self.pid[0..<self.rows, c1]
+		self.pid[0..<self.rows, c1] = self.pid[0..<self.rows, c2]
+		self.pid[0..<self.rows, c2] = temp_pid
+		let temp_col = self.row[0..<self.rows, c1]
+		self.row[0..<self.rows, c1] = self.row[0..<self.rows, c2]
+		self.row[0..<self.rows, c2] = temp_col
 	}
 	
 	mutating func rowslide(_ r1: Int, _ r2: Int, preserveLQ: Bool = true) {
@@ -496,7 +538,7 @@ struct RLQ {
 	
 	func unitDotValues() -> MLXArray {
 		let N = MLXLinalg.norm(self.row, ord: 2, axis: 1) // The norms of the rows
-		//debugPrint("Dots: \(N)")
+		debugPrint("Row norms: \(N)")
 		let UR = self.row/N.reshaped([-1, 1]) // The rows as unit vectors
 		//debugPrint("UR: \(UR)")
 		let UUT = inner(UR, UR)
@@ -506,6 +548,12 @@ struct RLQ {
 		let maxIndex = argMax(abs(OffDiag)) // the index in the flattened array of the largest value
 		print("Max off diagonal: \(OffDiag.flattened()[maxIndex])")
 		print("at (\(maxIndex)))")
+		print("maxIndex/self.row.shape[0]: \(maxIndex/self.row.shape[0])")
+		print("maxIndex%self.row.shape[0]: \(maxIndex%self.row.shape[0])")
+		print("sum is \(sum(N))")
+		let nnnn = sum(diag(self.row.matmul(transposed(self.row))))
+		//let nnnn = MLXLinalg.norm(self.row, ord: 'fro') // Cannot convert value of type 'String' to expected argument type 'Double'
+		print("nnnn: \(nnnn)")
 		return UUT
 	}
 }
