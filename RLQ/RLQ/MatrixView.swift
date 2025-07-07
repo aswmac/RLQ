@@ -60,14 +60,12 @@ struct MatrixView: View {
 										Text("House Row Diagonal")
 									}
 									Button(action: {
-										guard col - 1 >= 0 else { return } // The input is dimension checked by the view
-										guard row - 1 >= 0 else { return }
-										self.matrix.rowswap(row, row - 1)
-										self.matrix.givens(row: row - 1, Col0: col - 1, col1: col)
+										guard row + 3 < self.matrix.rows else { return } // could say not equal to zero...
+										self.matrix.diagSwap(row, row + 3)
 										//self.matrix.lq() // test it out, it just changes the corow...so no visual on that yet...
 										self.align() // refresh the integers view
 									}) {
-										Text("Diag-up")
+										Text("Diag-swap with down by three")
 									}
 									Button(action: {
 										self.matrix.reddim = row
@@ -83,10 +81,13 @@ struct MatrixView: View {
 										Text("Reduce diagonal")
 									}
 									Button(action: {
-										for i in 0...row {
-											while self.matrix.digest(i) { continue }
-											_ = self.matrix.reduceUnderL(to: i)
-										}
+										self.matrix.colneg(col)
+										self.align()
+									}) {
+										Text("negate column")
+									}
+									Button(action: {
+										_ = self.matrix.digallinc()
 										self.align()
 									}) {
 										Text("dig-loop")
@@ -154,7 +155,7 @@ struct MatrixView: View {
 										Text("Reduce row using LQ form")
 									}
 									Button(action: {
-										self.matrix.unitDotValues()
+										_ = self.matrix.unitDotValues()
 									}) {
 										Text("Print unit dot")
 									}
@@ -171,7 +172,6 @@ struct MatrixView: View {
 				Text("Row: *, Column: *")
 			}
 		} // end VStack
-		.padding()
 	} // end body
 }
 
