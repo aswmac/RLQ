@@ -535,25 +535,39 @@ struct RLQ {
 		let u2 = self.row[r2]/n2
 		return inner(u1, u2).item()
 	}
-	
-	func unitDotValues() -> MLXArray {
+	/// Find all the cos(theta)'s between the pairs of rows and do a rowswap-reduce step of the min of those angles (max of cos(theta))
+	mutating func minPairAngle() -> (Int, Int) {
 		let N = MLXLinalg.norm(self.row, ord: 2, axis: 1) // The norms of the rows
-		debugPrint("Row norms: \(N)")
-		let UR = self.row/N.reshaped([-1, 1]) // The rows as unit vectors
-		//debugPrint("UR: \(UR)")
-		let UUT = inner(UR, UR)
-		let e = MLXArray.eye(self.rows, k: 0, dtype: UUT.dtype)
-		let OffDiag = UUT - e
-		//debugPrint("UUT: \(UUT)")
-		let maxIndex = argMax(abs(OffDiag)) // the index in the flattened array of the largest value
-		print("Max off diagonal: \(OffDiag.flattened()[maxIndex])")
-		print("at (\(maxIndex)))")
-		print("maxIndex/self.row.shape[0]: \(maxIndex/self.row.shape[0])")
-		print("maxIndex%self.row.shape[0]: \(maxIndex%self.row.shape[0])")
-		print("sum is \(sum(N))")
-		let nnnn = sum(diag(self.row.matmul(transposed(self.row))))
-		//let nnnn = MLXLinalg.norm(self.row, ord: 'fro') // Cannot convert value of type 'String' to expected argument type 'Double'
-		print("nnnn: \(nnnn)")
-		return UUT
-	}
+		let UR = self.row/N.reshaped([-1, 1]) // The rows scaled as unit vectors
+		let UUT = inner(UR, UR) // The inner-product (ie all dot products) of the rows
+		let e = MLXArray.eye(self.rows, k: 0, dtype: UUT.dtype) // the diag will be all ones
+		let OffDiag = UUT - e // so they need to be removed for looking for pairs--no diag() for set yet...
+		let maxIndex = argMax(abs(OffDiag)) // the flattened index of the largest abs value
+		let mv: Float = OffDiag.flattened()[maxIndex].item()
+		debugPrint("Max dot-pair: \(mv)")
+		let mi: Float = maxIndex.item()
+		let i2: Int = Int(mi.truncatingRemainder(dividingBy: Float(self.row.shape[0])))
+		let i1:Int = Int(mi/Float(self.row.shape[0]))
+		let n1:Float = N[i1].item()
+		let n2: Float = N[i2].item()
+		if n1 < n2 { // want to put smallest norm to top
+			self.diagSlide(from: i1, to: 0)
+			if i1 > i2 { // but if it makes the other row slide down by one...
+				self.diagSlide(from: i2 + 1, to: 1)
+			} else {
+				self.diagSlide(from: i2, to: 1)
+			}
+		} else {
+			self.diagSlide(from: i2, to: 0)
+			if i2 > i1 { // but if it makes the other row slide down by one...
+				self.diagSlide(from: i1 + 1, to: 1)
+			} else {
+				self.diagSlide(from: i1, to: 1)
+			}
+		}
+		let l1: Int = sum(N).item() // this is the sum of row-norms, not the sum of squares, nor the sqrt of that...
+		debugPrint("L1 norm before any ops: \(l1)")
+		return (i1, i2) // These WERE the indices...
+	} // TODO: if run this repeatedly, just reorder and recalculate the few changes at a time...
+	
 }
