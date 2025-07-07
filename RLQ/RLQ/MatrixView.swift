@@ -153,6 +153,11 @@ struct MatrixView: View {
 									}) {
 										Text("Reduce row using LQ form")
 									}
+									Button(action: {
+										self.matrix.unitDotValues()
+									}) {
+										Text("Print unit dot")
+									}
 								}
 						}
 					}
