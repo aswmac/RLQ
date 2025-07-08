@@ -303,39 +303,21 @@ struct RLQ {
 	
 	/// zero across the row of the row matrix
 	mutating func houseRow(_ ir: Int, _ ic: Int) {
-		//debugPrint("start: row[0] = \(self.row[0])")
-		//debugPrint("start: pid[0] = \(self.pid[0])")
 		let kx = self.row[ir, ic..<self.cols]
-		//debugPrint("shape of kx is \(kx.shape)")
 		//let nn = rmsNorm(kx, weight: .ones(like: kx), eps: machineEpsilon) // NO! this is x broadcast-divided by (L_2 / sqrt(dim))
 		let nn = MLXLinalg.norm(kx, ord: 2)
 		let squaredim = self.cols - ic
 		let e0 = eye(1, m: squaredim, k: 0, dtype: .float32)
 		let vk = kx - nn*e0
-		//debugPrint("01: row[0] = \(self.row[0])")
-		//debugPrint("01: pid[0] = \(self.pid[0])")
 		let vn = MLXLinalg.norm(vk, ord: 2, stream: .cpu) // MLX error: [linalg::svd] This op is not yet supported on the GPU. Explicitly pass a CPU stream to run it.
 		let v = vk/vn
 		let xx = outer(v, v) // outer product, (self.cols - ic - 1) square
-		//debugPrint("02: row[0] = \(self.row[0])")
-		//debugPrint("02: pid[0] = \(self.pid[0])")
 		let e = eye(squaredim, m: squaredim, k: 0, dtype: .float32)
 		let q = e - 2*xx
-		//debugPrint("03: row[0] = \(self.row[0])")
-		//debugPrint("03: pid[0] = \(self.pid[0])")
-		//debugPrint("shape of q is \(q.shape)")
 		let temprow = self.row[0..<self.rows,ic..<self.cols]
-		//debugPrint("temprow is \(temprow)")
 		let newrow = temprow.matmul(q)
-		//debugPrint("newrow is \(newrow)")
-		//debugPrint("shape of newrow is \(newrow.shape)")
-		//debugPrint("row[0] (again) is \(self.row[0])")
 		self.row[0..<self.rows,ic..<self.cols] = newrow
-		//debugPrint("04: row[0] = \(self.row[0])")
-		//debugPrint("04: pid[0] = \(self.pid[0])")
 		self.corow[0..<self.cols,ic..<self.cols] = self.corow[0..<self.cols,ic..<self.cols].matmul(q) // corow is cols by cols
-		//debugPrint("end: row[0] = \(self.row[0])")
-		//debugPrint("end: pid[0] = \(self.pid[0])")
 	}
 	
 	func dot(row1 r1: Int, row2 r2: Int, from c1: Int, to c2: Int) -> Float32 {
