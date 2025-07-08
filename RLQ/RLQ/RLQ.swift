@@ -304,7 +304,6 @@ struct RLQ {
 	/// zero across the row of the row matrix
 	mutating func houseRow(_ ir: Int, _ ic: Int) {
 		let kx = self.row[ir, ic..<self.cols]
-		//let nn = rmsNorm(kx, weight: .ones(like: kx), eps: machineEpsilon) // NO! this is x broadcast-divided by (L_2 / sqrt(dim))
 		let nn = MLXLinalg.norm(kx, ord: 2)
 		let squaredim = self.cols - ic
 		let e0 = eye(1, m: squaredim, k: 0, dtype: .float32)
@@ -314,9 +313,7 @@ struct RLQ {
 		let xx = outer(v, v) // outer product, (self.cols - ic - 1) square
 		let e = eye(squaredim, m: squaredim, k: 0, dtype: .float32)
 		let q = e - 2*xx
-		let temprow = self.row[0..<self.rows,ic..<self.cols]
-		let newrow = temprow.matmul(q)
-		self.row[0..<self.rows,ic..<self.cols] = newrow
+		self.row[0..<self.rows,ic..<self.cols] = self.row[0..<self.rows,ic..<self.cols].matmul(q)
 		self.corow[0..<self.cols,ic..<self.cols] = self.corow[0..<self.cols,ic..<self.cols].matmul(q) // corow is cols by cols
 	}
 	
