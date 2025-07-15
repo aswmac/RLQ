@@ -64,9 +64,9 @@ struct RLQ {
 	var corow: MLXArray // SQUARE matrix, float
 	var reddim: Int = 0
 	private let machineEpsilon: Float32 = 1.0e-15 // If just Float, then Float64...MLX ERROR
-	private let zedEpsilon: Float32 = 1e-12 // avoid small components for division
+	static let zedEpsilon: Float32 = 1e-12 // avoid small components for division
 	private let driftThreshold: Float32 = 1.0e-4 // tolerance of error aggregated, triggers a re-alignment doing R = L*Q
-	private let qualityMIN: Float32 = 1.1548 // min for all assumption possible is 1.15470025 ie 2/√3
+	private let LLLqualityMIN: Float32 = 1.45 //1.1548 // min for all assumption possible is 1.15470025 ie 2/√3
 	private var driftRow: Float32 = 1.0e-7 // The track of row operations errors that might want a re-alignment like R = LQ or R_i = ...
 	
 	init(rows: Int, cols: Int) {
@@ -91,7 +91,7 @@ struct RLQ {
 		driftRow = machineEpsilon // Use the count of operations on a row (or maybe a float representing err?)
 		assert(self.pid.dtype == .int32, "MLX array init(): pid dtype is not int32")
 		assert(self.corow.dtype == .float32, "MLX array init(): corow dtype is not float32")
-		assert(self.row.dtype == .float32, "rMLX array init(): ow dtype is not float32")
+		assert(self.row.dtype == .float32, "MLX array init(): row dtype is not float32")
 	}
 	
 	mutating func reset(reorder: Bool = true) {
@@ -117,13 +117,14 @@ struct RLQ {
 		return k
 	}
 
-	func kFromFloat(_ den_in: MLXArray, reducing num_in: MLXArray) -> Int32 {
+	func kFromFloat(_ den_in: MLXArray, reducing num_in: MLXArray) -> Float32 {
 		assert(den_in.dtype == .float32 && num_in.dtype == .float32)
 		let den: Float32 = den_in.item()
-		if abs(den) < zedEpsilon { return 0 }  // ignore small components
+		if abs(den) < RLQ.zedEpsilon { return 0 }  // ignore small components
 		let num: Float32 = num_in.item()
-		let kf = (2.0*num + den)/(2.0*den) // Seems to work--it zeros the column
-		let k = Int32(kf.rounded(.down)) // with this round down of course
+		let kf: Float32 = (2.0*num + den)/(2.0*den) // Seems to work--it zeros the column
+		assert(kf.isFinite, "kFromFloat(): number too large")
+		let k = kf.rounded(.down) // with this round down of course
 		return k
 	}
 	
@@ -193,7 +194,7 @@ struct RLQ {
 			let f: Float32 = self.row[i, i].item()        //<--- variables renamed only for reading and typing convenience.
 			if abs(a) < diagEpsilon { i += 1; continue }  // way small like epsilon, a zero row likely
 			let test = abs(a/f)
-			if test < self.qualityMIN { i += 1; continue } // here the diagonal is reduced up to quality already
+			if test < self.LLLqualityMIN { i += 1; continue } // here the diagonal is reduced up to quality already
 			let zchange = self.zrow(rm: i) // This will reduce e, but also those to the left of e--Good for loop on larger block
 			if zchange == false {
 				self.givens(row: i, Col0: i-1, col1: i) // inline of rowSlide which preserves the LQ form
@@ -242,7 +243,7 @@ struct RLQ {
 			}
 			var dmax = dratio.max()!
 			//debugPrint("dmax initial: \(dmax)")
-			while dmax > self.qualityMIN {
+			while dmax > self.LLLqualityMIN {
 				while self.digest(self.reddim - 1) { continue }
 				self.reset(reorder: true)
 				for i in 1..<self.reddim {
@@ -278,7 +279,8 @@ struct RLQ {
 		let d0: Float32 = inner(self.row[rm, 0..<rm], self.row[rm, 0..<rm]).item() // get norm squared of L-row
 		var change: Bool = false
 		for i in stride(from: rm - 1, to: start - 1, by: -1) { // diagonal of row going backwards/countdown
-			let k = kFromFloat(self.row[i, i], reducing: self.row[rm, i])
+			let kf = kFromFloat(self.row[i, i], reducing: self.row[rm, i])
+			let k = Int32(kf)
 			if k == 0 { continue } // if there is no reduction
 			self.rowSubPlace(rm, minusRow: i, times: k)
 			change = true
@@ -308,13 +310,15 @@ struct RLQ {
 		let squaredim = self.cols - ic
 		let e0 = eye(1, m: squaredim, k: 0, dtype: .float32)
 		let vk = kx - nn*e0
-		let vn = MLXLinalg.norm(vk, ord: 2, stream: .cpu) // MLX error: [linalg::svd] This op is not yet supported on the GPU. Explicitly pass a CPU stream to run it.
+		let vn = MLXLinalg.norm(vk, ord: 2, stream: .cpu) // "This op is not yet supported on the GPU"
 		let v = vk/vn
-		let xx = outer(v, v) // outer product, (self.cols - ic - 1) square
+		let xx = outer(v, v)
 		let e = eye(squaredim, m: squaredim, k: 0, dtype: .float32)
 		let q = e - 2*xx
-		self.row[0..<self.rows,ic..<self.cols] = self.row[0..<self.rows,ic..<self.cols].matmul(q)
-		self.corow[0..<self.cols,ic..<self.cols] = self.corow[0..<self.cols,ic..<self.cols].matmul(q) // corow is cols by cols
+		let temprow = self.row[0..<self.rows,ic..<self.cols]
+		let newrow = temprow.matmul(q)
+		self.row[0..<self.rows,ic..<self.cols] = newrow
+		self.corow[0..<self.cols,ic..<self.cols] = self.corow[0..<self.cols,ic..<self.cols].matmul(q)
 	}
 	
 	func dot(row1 r1: Int, row2 r2: Int, from c1: Int, to c2: Int) -> Float32 {
@@ -354,6 +358,10 @@ struct RLQ {
 		while self.colzeroPass(col: cm, row: rm) { continue }
 		if self.pid[rm, cm].item() < 0 { self.rowneg(rm) }
 	}
+	/// diagonalize (the row matrix for use of large/Float values), with pivoting and integer only operations
+	mutating func smith(diag: Int = 0) {
+		
+	}
 	
 	// like colzeroPass, but looking at row not pid, and keeping the row not moving it
 	mutating func zcol(from row: Int, col: Int) -> Bool {
@@ -364,7 +372,8 @@ struct RLQ {
 		var change: Bool = false
 		for r in row+1..<self.rows {
 			//debugPrint("checking \(r)")
-			let k = kFromFloat(self.row[row, col], reducing: self.row[r, col])
+			let kf = kFromFloat(self.row[row, col], reducing: self.row[r, col])
+			let k = Int32(kf)
 			guard k != 0 else { continue }
 			self.rowSubPlace(r, minusRow: row, times: k)
 			//debugPrint("Did rowSubPlace")
@@ -385,11 +394,18 @@ struct RLQ {
 		}
 		return reduceIndices
 	}
-
-	mutating func colzeroPass(col: Int = 0, row: Int = 0) -> Bool {
-		// reduce using no divides per-se down the column
-		
-		// find the index for the minimum non-zero element at or below the row in the column
+	
+	mutating func rowsort() {
+		var j = self.rows - 1
+		while j > 0 {
+			let N = MLXLinalg.norm(self.row[0...j], ord: 2, axis: 1) // The norms of the rows
+			let maxIndex: Int = argMax(N).item()
+			self.rowswap(maxIndex, j)
+			j -= 1
+		}
+	}
+	/// find the index for the minimum non-zero element at or below the row in the column
+	func minNonZeroPID(from row: Int, col: Int) -> Int? {
 		var mn: Int32 = Int32.max // big number, testing if 999999999 or Int32.max gives an error...
 		var mni: Int?
 		for r in row..<self.rows {
@@ -399,6 +415,42 @@ struct RLQ {
 				mni = r
 			}
 		}
+		return mni
+	}
+	/// find the index for the minimum non-zero element at or below the row in the column
+	func minNonZeroROW(from row: Int, col: Int) -> Int? {
+		var mn: Float32 = Float32.infinity // big number, testing if 999999999 or Int32.max gives an error...
+		var mni: Int?
+		for r in row..<self.rows {
+			let p: Float32 = abs(self.row[r, col].item())
+			if p < machineEpsilon { continue }
+			if mni == nil || p < mn {
+				mn = p
+				mni = r
+			}
+		}
+		return mni
+	}
+	/// reduce using no divides per-se down the column of the ROW matrix, only row-swapping on the PID
+	mutating func zcolPass(col: Int = 0, row: Int = 0) -> Bool {
+		let mni = self.minNonZeroROW(from: row, col: col)
+		if mni == nil { return false }
+		let minIndex = mni!
+		if minIndex != row { self.rowswap(row, minIndex) }
+		var change: Bool = false
+
+		for r in (row+1)..<self.rows {
+			let k = kFromFloat(self.row[row, col], reducing: self.row[r, col])
+			guard k != 0 else { continue }
+			change = true
+			//self.rowSubPlace(r, minusRow: row, times: k)
+			self.row[r] = self.row[r] - k*self.row[row]
+		}
+		return change
+	}
+	/// reduce using no divides per-se down the column
+	mutating func colzeroPass(col: Int = 0, row: Int = 0) -> Bool {
+		let mni = self.minNonZeroPID(from: row, col: col)
 		if mni == nil { return false }
 		let minIndex = mni!
 		if minIndex != row { self.rowswap(row, minIndex) }
@@ -412,6 +464,33 @@ struct RLQ {
 		}
 		return change
 	}
+	
+	/// integer row operations only, diagonal result
+	mutating func smithDiagROW(row: Int, col: Int) {
+		var i = row
+		var j = col
+		while i < self.rows && j < self.cols {
+			while self.zcolPass(col: j, row: i) { continue }
+			// now do the elements above the pivot row[i, j]
+			for n in stride(from: i - 1, to: -1, by: -1) {
+				let k = kFromFloat(self.row[i, j], reducing: self.row[n, j])
+				// debugPrint("k = \(k)")
+				if k.isNaN || k.isInfinite {
+					return
+				}
+				self.row[n] = self.row[n] - k*self.row[i]
+			}
+			i += 1
+			j += 1
+		}
+		
+	}
+	
+	mutating func tq() {                                            // • • • • • 0
+		for i in stride(from: self.rows - 1, to: -1, by: -1) {        // • • • • 0 0
+			self.houseRow(i, self.rows - 1 - i)                         // • • • 0 0 0
+		}                                                             // • • 0 0 0 0
+	}                                                               // • 0 0 0 0 0
 	
 	mutating func rowneg(_ r: Int) {
 		self.pid[r] = -self.pid[r]
@@ -553,49 +632,171 @@ struct RLQ {
 				self.diagSlide(from: i1, to: 1)
 			}
 		}
-		let l1: Int = sum(N).item() // this is the sum of row-norms, not the sum of squares, nor the sqrt of that...
-		debugPrint("L1 norm before any ops: \(l1)")
+		//let l1: Int = sum(N).item() // this is the sum of row-norms, not the sum of squares, nor the sqrt of that...
+		let lnorm = MLXLinalg.norm(N, ord: 2, axis: 0)
+		let lprint: Float32 = lnorm.item()
+		debugPrint("L1 norm before any ops: \(lprint)")
 		return (i1, i2) // These WERE the indices...
 	} // TODO: if run this repeatedly, just reorder and recalculate the few changes at a time...
+	// TODO: also, want to scale by possible reduction like (cos(t) - 0.5)*(normBig - normSmall)
 	
+	/// ASSUMPTION: self is in LQ form
+	/// Use only the first maxRow number of rows to reduce the given row
+	//func nearest(to row: MLXArray, using maxRow: Int?) -> MLXArray {
+	func nearest(to index: Int) {
+		//var e = MLXArray.eye(1, m: 31, k: index, dtype: .float32) // HOW MAKE SHAPE JUST [30]?!?!?! // row vector
+		var e = self.pid[index]
+		print("e=\(e)")
+		var rxRow = e.matmul(self.corow) // rotate the row into the basis
+		print("rxRow.shape=\(rxRow.shape)")
+		//print("rxRow=\(rxRow)")
+		let opan: Float32 = rxRow[30].item()
+		print("outside span \(opan)")
+		for mul in 1..<5 {
+			//var mix = MLXArray.zeros([1, self.row.shape[1]], dtype: .int32)
+			e = self.pid[index] // reset for this mul
+			//e = MLXArray.eye(1, m: 31, k: index, dtype: .float32) // reset for this mul
+			var mix: [Int32] = Array(repeating: 0, count: self.row.shape[1])
+			rxRow = e.matmul(self.corow) // reset and rotate the row into the basis
+			print("\(mul): rxRow.shape=\(rxRow.shape)")
+			for i in stride(from: self.rows - 1, to: -1, by: -1) {
+				let k = kFromFloat(self.row[i,i], reducing: mul*rxRow[i])
+				//let k = kFrom(self.row[i,i].item(), reducing: row[i].item())
+				mix[i] = Int32(k) //TODO: Fatal error: Float value ... Int32...result ... Int32.max
+				e = e - k*self.pid[i]
+				rxRow = e.matmul(self.corow) // reset and rotate the row into the basis
+			}
+			let nn: Float32 = MLXLinalg.norm(rxRow, ord: 2, stream: .cpu).item() // ... cpu needed here...?...
+			print("e the remaining e = \(e)")
+			print("\(mul): norm of remaining: \(nn)")
+			print("\(mul): mix=\(mix)")
+		}
+		
+		
+		
+		//let result = mix*self.row
+		//print(result)
+		//return result
+	}
 	/// enumerate all reduction possibilites for rowmix to row trow, using first dim row.
 	/// A reduction is relative to the target row, any smaller possibility than the target.
 	/// Depth-first search
 	func enumerate(for trow: Int) {
-		let dim = trow
 		let d0: Int = MLXLinalg.norm(self.pid[trow], ord: 1).item() // rownorm to test reduction later, L1 for easy diff-calcs
-		let rn: Float = MLXLinalg.norm(self.row[trow, 0..<trow], ord: 1).item() // norm of the "in-span" portion of trow
-		var pass = MixTree(dim: trow, start: self.row[trow, trow].item(), max: Float(d0)) // the list of possible rowmixes that give L1 result less than max
-		var i = trow - 1
-		while i >= 0 && !pass.finished {
-			pass.note(from: i, with: self.row[i, i].item(), to: self.row[trow, i].item())
-			i = i - 1
+		//let rn: Float = MLXLinalg.norm(self.row[trow, 0..<trow], ord: 1).item() // norm of the "in-span" portion of trow
+		let pass = MixTree(dimStillToCheck: trow, independence: self.row[trow, trow].item(), max: Float(d0)) // the list of possible rowmixes that give L1 result less than max
+		for i in stride(from: trow - 1, to: -1, by: -1) {
+			let c = pass.note(from: i, with: self.row[i, i].item(), to: self.row[trow, i].item())
+			print("enumerate(): c=\(c)")
+			if c > 200000 {
+				print("count at i=\(i) is = \(c), breaking out!")
+				break
+			}
 		}
-	}
-}
-
-/// organize the different rowmix possibilities along with thier minimums
-struct MixTree {
-	var row: [Int]                      // • • • •
-	var dim: Int // size                // • • • • •
-	var start: Float                    // • • • • • •
-	var max: Float                      //--------------
-	var finished: Bool = false          // • • • • • • •
-	
-	//
-	init(dim: Int, start: Float, max: Float) {
-		self.dim = dim
-		self.row = Array(repeating: 0, count: dim)
-		self.start = abs(start)
-		self.max = max
-		self.finished = (abs(start) >= max)
-	}
-	
-	func note(from r: Int, with n: Float, to my: Float) {
+		print("COUNTLEAFS!!! There are \(pass.countLeafs()) leafs")
 		
 	}
+}
+///                      // •
+///                      // • •
+///                      // • • •
+///                      // • • • •
+/// organize the different rowmix possibilities (along with thier minimums?)
+///  keep only the integer rowmixes, the dimToCheck because it is the level in the tree, and have the RLQ check them
+class MixTree {                          // • • •
+	var rowMix: [Int]                      // • • • •
+	var dimToCheck: Int // size            // • • • • •
+	var independence: Float32              // • • • • • •
+	var max: Float32                       //--------------
+	var leaf: Bool = false                 // • • • • • • •
+	var treesBelow: [MixTree] = []
+	
+	// Starting init as there is not a row-mix list/array given
+	init(dimStillToCheck: Int, independence: Float32, max: Float32) {
+		self.dimToCheck = dimStillToCheck
+		self.rowMix = Array(repeating: 0, count: dimStillToCheck)
+		self.independence = abs(independence)
+		self.max = max
+		self.leaf = (abs(independence) >= max)
+	}
+	
+	// init when there is a row-mix given
+	init(dim: Int, independence: Float32, max: Float32, rowMix: [Int]) {
+		self.dimToCheck = dim
+		self.rowMix = rowMix
+		self.independence = abs(independence)
+		self.max = max
+		self.leaf = (abs(independence) >= max)
+	}
+	
+	func countLeafs() -> Int {
+		if self.leaf { return 1 }
+		var count: Int = 0
+		for child in self.treesBelow {
+			count += child.countLeafs()
+		}
+		return count
+	}
+
+	func note(from r: Int, with n: Float32, to my: Float32) -> Int {
+		if self.leaf { return 0 } // self a leaf means no more possibilites as max norm has been surpassed
+		var count: Int = 0 // count new possibilities
+		if self.dimToCheck == 0 { // if no more trees below...
+			self.leaf = true
+			return 0
+		}
+		if r < self.dimToCheck - 1 { // if the test belongs to a child node
+			for child in self.treesBelow {
+				count += child.note(from: r, with: n, to: my)
+			}
+			return count
+		}
+		let k = kFrom(n, reducing: my) // k will not always be zero as different reductions get tried out
+		var star: Float32
+		var diffStep: Int = 0
+		var kstep: Int
+		var checkPositiveSteps = true
+		while checkPositiveSteps {
+			kstep = k + diffStep
+			star = my - Float32(kstep)*n
+			if self.independence + abs(star) >= self.max { // L1 norm for easier calculations
+				checkPositiveSteps = false
+			} else {
+				let nextStart = abs(star) + self.independence // L1 norm for easier calculations
+				var newRow = self.rowMix//[0..<self.row.count] // want copy-construct...need to do slice...?
+				newRow[r] = Int(kstep)
+				let nextDown = MixTree(dim: r, independence: nextStart, max: self.max, rowMix: newRow)
+				self.treesBelow.append(nextDown)
+				count += 1
+			}
+			diffStep += 1
+		}
+		var checkNegativeSteps = true
+		diffStep = -1
+		while checkNegativeSteps {
+			kstep = k + diffStep
+			star = my - Float32(kstep)*n
+			if self.independence + abs(star) >= self.max { // L1 norm for easier calculations
+				checkNegativeSteps = false
+			} else {
+				let nextStart = abs(star) + self.independence // L1 norm for easier calculations
+				var newRow = self.rowMix//[0..<self.row.count] // want copy-construct...need to do slice...?
+				newRow[r] = Int(kstep)
+				let nextDown = MixTree(dim: r, independence: nextStart, max: self.max, rowMix: newRow)
+				self.treesBelow.append(nextDown)
+				count += 1
+			}
+			diffStep -= 1
+		}
+		return count
+	}
 	
 	
 }
 
-
+func kFrom(_ den: Float32, reducing num: Float32) -> Int {
+	if abs(den) < RLQ.zedEpsilon { return 0 }  // ignore small components
+	let kf = (2.0*num + den)/(2.0*den) // Seems to work--it zeros the column
+	let k = Int(kf.rounded(.down)) // with this round down of course
+	return k
+}
