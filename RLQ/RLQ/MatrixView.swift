@@ -16,7 +16,7 @@ struct MatrixView: View {
 		self.floaters = im.floatArray()
 	}
 	
-	func align() {
+	func resync() {
 		self.integers = self.matrix.intArray()
 		self.floaters = self.matrix.floatArray()
 	}
@@ -47,7 +47,7 @@ struct MatrixView: View {
 										//guard row > 0 else { return } // The input is dimension checked by the view
 										self.matrix.houseRow(row, col)
 										//self.matrix.lq() // test it out, it just changes the corow...so no visual on that yet...
-										self.align() // refresh the integers view
+										self.resync() // refresh the integers view
 									}) {
 										Text("House Row zero to the right")
 									}
@@ -55,42 +55,55 @@ struct MatrixView: View {
 										//guard row > 0 else { return } // The input is dimension checked by the view
 										self.matrix.houseDiag(row, col)
 										//self.matrix.lq() // test it out, it just changes the corow...so no visual on that yet...
-										self.align() // refresh the integers view
+										self.resync() // refresh the integers view
 									}) {
 										Text("House Row Diagonal")
 									}
 									Button(action: {
-										guard row + 3 < self.matrix.rows else { return } // could say not equal to zero...
-										self.matrix.diagSwap(row, row + 3)
+										guard row + 1 < self.matrix.rows else { return } // could say not equal to zero...
+										self.matrix.diagSwap(row, row + 1)
 										//self.matrix.lq() // test it out, it just changes the corow...so no visual on that yet...
-										self.align() // refresh the integers view
+										self.resync() // refresh the integers view
 									}) {
-										Text("Diag-swap with down by three")
+										Text("Diag-swap down")
 									}
 									Button(action: {
 										self.matrix.reddim = row
 										self.matrix.lq()
-										self.align() // refresh the integers/row view
+										self.resync() // refresh the integers/row view
 									}) {
 										Text("LQ")
 									}
 									Button(action: {
+										self.matrix.smithDiagROW(row: row, col: col)
+										//self.matrix.smithDiagROW(row: row, col: col)
+										self.resync() // refresh the integers/row view
+									}) {
+										Text("smith-diag-down")
+									}
+									Button(action: {
 										_ = self.matrix.reduceUnderL(to: row)
-										self.align()
+										self.resync()
 									}) {
 										Text("Reduce diagonal")
 									}
 									Button(action: {
-										self.matrix.colneg(col)
-										self.align()
-									}) {
-										Text("negate column")
-									}
-									Button(action: {
 										_ = self.matrix.digallinc()
-										self.align()
+										self.resync()
 									}) {
 										Text("dig-loop")
+									}
+									Button(action: {
+										self.matrix.rowsort()
+										self.resync()
+									}) {
+										Text("rowsort")
+									}
+									Button(action: {
+										self.matrix.reset(reorder: false)
+										self.resync()
+									}) {
+										Text("reset")
 									}
 								}
 						}
@@ -116,21 +129,27 @@ struct MatrixView: View {
 								}
 								.contextMenu {
 									Button(action: {
+										self.matrix.enumerate(for: row)
+										self.resync()
+									}) {
+										Text("ENUMERATE!")
+									}
+									Button(action: {
 										self.colzeroPass(cm: col, rm: row)
-										self.align() // refresh the integers view
+										self.resync() // refresh the integers view
 									}) {
 										Text("colzeroPass")
 									}
 									Button(action: {
 										self.matrix.rowneg(row)
-										self.align()
+										self.resync()
 									}) {
 										Text("Negate Row")
 									}
 									Button(action: {
 										guard row - 1 >= 0 else { return }
 										self.matrix.rowswap(row, row-1)
-										self.align() // refresh the integers view
+										self.resync() // refresh the integers view
 									}) {
 										Text("Swap row up")
 									}
@@ -138,26 +157,35 @@ struct MatrixView: View {
 										//guard row > 0 else { return } // The input is dimension checked by the view
 										self.matrix.rowslide(row, 0)
 										self.matrix.lq() // test it out, it just changes the corow...so no visual on that yet...
-										self.align() // refresh the integers view
+										self.resync() // refresh the integers view
 									}) {
 										Text("Put row to top")
 									}
 									Button(action: {
 										self.matrix.randNull()
-										self.align()
+										self.resync()
 									}) {
 										Text("Randomize entire matrix null column")
 									}
 									Button(action: {
 										_ = self.matrix.zrow(rm: row)
-										self.align()
+										self.resync()
 									}) {
 										Text("Reduce row using LQ form")
 									}
 									Button(action: {
-										_ = self.matrix.unitDotValues()
+										_ = self.matrix.minPairAngle()
+										_ = self.matrix.zrow(rm: 1) 
+										self.resync()
 									}) {
 										Text("Print unit dot")
+									}
+									Button(action: {
+										//let e = MLXArray.eye(1, m: 31, k: 2, dtype: .float32)
+										self.matrix.nearest(to: col)
+										//self.resync()
+									}) {
+										Text("Nearest test")
 									}
 								}
 						}
