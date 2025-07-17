@@ -4,7 +4,7 @@
 
 
 from __future__ import print_function
-from rlq import *
+from rlq import * # doing some side tests of things, not used for final answer!
 import random
 import time
 import copy
@@ -34,6 +34,56 @@ def fractionals(alpha_string, n, num_digits):
 		yi = (xi - (xi//10**num_digits)*10**num_digits)
 		x.append(yi)
 	return x
+
+def closest(x, y, diff):
+	'''
+	'''
+	good_diffs = []
+	for i in range(1,len(y)):
+		d2 = abs(x - y[i])%y[0]
+		if d2 < diff:
+			good_diffs.append([d2, i])
+	return good_diffs
+
+def closest_search(y):
+	'''
+	'''
+	best_index = {}
+	n = len(y)
+	for i in range(1, len(y)): # for each value
+		for j in range(2,n): # for multiples of that value
+			good_diffs = closest(j*y[i]%y[0], y, 2*n) # find the closest match
+			for pair in good_diffs:
+				(d2, ki) = pair
+				if d2 < 2*n:
+					if i in best_index.keys():
+						best_index[i].append([d2,j,ki])
+					else:
+						best_index[i] = [[d2,j,ki]]
+	max_num = 0
+	max_i = 0
+	for k in best_index.keys():
+		num_this = len(best_index[k])
+		#print("key", k, "has", num_this, "elements:")
+		if num_this > max_num:
+			max_num = num_this
+			max_i = k
+		#for v in best_index[k]:
+			#print(v[1], " times list[", k, "] == list[", v[2], "]", sep="", end="")
+			#print("\t\t\t", y[v[2]] - v[1]*y[k]%y[0] )
+	print("LOOKS LIKE your base element is at index", max_i, "!!!")
+	print("......................................................")
+	print("... is this your number:")
+	print("")
+	print("")
+	print("\n\n\n")
+	print(y[max_i])
+	print("")
+	print("")
+	print("\n\n\n")
+	print("... it is ... isn't it.")
+	print("\n\n\n")
+	#return best_index
 
 def frac_ratio(den, f1, f2):
 	mm = rlq(3,4)
@@ -88,10 +138,10 @@ def run_pairs(xlist):
 	for i in range(1, n):
 		for j in range(i + 1, n + 1):
 			a, b, c = frac_ratio(x[0], xlist[i], xlist[j]) # do the LLL reduction of [[1,1,0,0],[f1,0,1,0],[f2,0,0,1]], smallest in lattice
-			if p_indices.append(abs(a), j): print(i,j,a,b, " with units", c)
-			if p_indices.append(abs(b), i): print(i,j,a,b, " with units", c)
+			if p_indices.append(abs(a), j): pass #print(i,j,a,b, " with units", c)
+			if p_indices.append(abs(b), i): pass #print(i,j,a,b, " with units", c)
 			
-	print(" indices:", p_indices.dictionary)
+	#print(" indices:", p_indices.dictionary)
 	return p_indices
 	
 	
@@ -105,8 +155,8 @@ def main():
 	global yy
 	global p_indices
 	
-	num_digits = 12
-	num_scales = 77
+	num_digits = 25
+	num_scales = 150
 
 	x = fractionals(estring, num_scales, num_digits)
 
@@ -135,10 +185,11 @@ def main():
 	yy.sort()
 	yy = [yy[-1]] + yy[:-1] # put the denominator back to the front
 	p_indices = run_pairs(yy)
-	for k in p_indices.primes():
-		ztest = yy[p_indices[k]] - y[k]
+	for p in p_indices.primes():
+		ztest = yy[p_indices[p]] - y[p] ## CHECKING HERE,
 		if ztest != 0: print("OH NO!!! FAIL.....................!")
-		else: print(".", end="")
+		else: print(".", end="") # OTHERWISE we have that (p1 - p0)*frac == yy[p_i_0] - yy[p_i_1] (mod den = yy[0])
+	closest_search(yy)
 	
 
 
@@ -146,5 +197,5 @@ import code
 if __name__ == "__main__":
 	main()
 	
-	print("INTERACTIVE MODE---type exit() to quit.")
+	print("\t\t\t\t\t\t\tINTERACTIVE MODE---type exit() to quit.")
 	code.interact(local=locals())
