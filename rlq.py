@@ -53,7 +53,7 @@
 # xrows()         --> house_row(), xcol()
 # xcol()          --> NONE
 from __future__ import print_function
-from num_funs import dot, gcd
+from num_funs import dot, gcd, egcd
 #import os # for read and write bitmaps, from_bmp() and to_bmp()
 import time # to print run times in qsvd()
 import math # used in the duo_mat(), orthotridiag()
@@ -74,6 +74,9 @@ class rlq(object):
     self.pid  =[[0 for i in self.colrange] for j in self.rowrange] # table of rows
     self.row  =[[0.0 for i in self.colrange] for j in self.rowrange] # full span in dimension
     self.corow=[[0.0 for i in self.colrange] for j in self.colrange] # full span and square to keep Q of the LQ
+    self.drift_row = 1e-7
+    self.drift_threshold = 1e-4
+    self.machine_epsilon = 1e-12
     self.disp = 1 # flag to denote the display of call matrix or not
     self.temprow = [0.0 for i in self.colrange] # a row of scratch memory to use for calculations
     self.tempcol = [0.0 for i in self.rowrange] # a col of scratch memory to use for calculations
@@ -158,6 +161,7 @@ class rlq(object):
         else: self.corow[i][j]   = 0.0
     #self.reddim = self.rows
     if reorder: self.lq()
+    self.drift_row = self.machine_epsilon
   def test(self):
     ''' test that self.row (the L matrix) is in lower triangular form '''
     t = 0.0
@@ -360,7 +364,7 @@ class rlq(object):
       if abs(t) - 0.5 < 1e-6: continue # if the possible change is not of any significant magnitude
       k = int((t + 0.5)//1.0)
       if k!=0: #<-- a reduction may take place
-        for j in self.colrange:
+        for j in self.colrange: # TODO: may take out the manual reset for drift_threshold instead
           self.pid[i][j] -= k*self.pid[ir][j] # row_sub_place() on just the pid[], row[] is recalculated later
         for j in range(first-1, -1, -1): #<-find the other row value reductions
           self.row[i][j] = 0.0
@@ -401,7 +405,7 @@ class rlq(object):
     if mn < 1.0 - mn: # do rowmix that matches the sign
       rrd = False
       for i in range(self.reddim):
-        if i==ir: continue
+        if i==ir: continue # TODO: may take out the manual reset for drift_threshold instead
         k = int(t[i]//1.0) # nearest int of the ratio
         if k!=0:
           rrd = True
@@ -502,25 +506,56 @@ class rlq(object):
     kvec = [0 for i in range(rm+1)]
     kvec[rm] = 1
     for j in self.colrange: d0 += self.pid[rm][j]**2 # get the rownorm of row rm
-    for i in range(rm-1, start-1, -1):
-      if abs(self.row[i][i]) < 1e-6: continue # ignore small components (while also avoiding zero division)
-      self.row[rm][i] = 0.0 # setup to reset row[rm][i] for precision/accuracy
-      for g in self.colrange:
-        self.row[rm][i] += float(self.pid[rm][g])*self.corow[g][i]
-      t = self.row[rm][i]/self.row[i][i]
-      if abs(abs(t) - 0.5) < 1e-6: continue # ignore small reduction amounts
-      k = int((t + 0.5)//1.0) # nearest int of the ratio TODO: consider if too large, ie NaN values
+    for i in range(min(rm-1, self.cols - 1), start-1, -1):
+      k = self.k_from_float(self.row[rm][i], self.row[i][i])
       if k == 0: continue # if there is no reduction
-      kvec[i] = k
-      for j in self.colrange: # inline of row_sub_place(rm, i, k)
-        self.pid[rm][j] -= k*self.pid[i][j]
-      self.row[rm][j] = 0.0 # reset the new row[rm][i] value for precision (reductions lose accuracy)
-      for g in self.colrange: #TODO: after reducing, other values become less "zero like" in relative comparison
-        self.row[rm][i] += float(self.pid[rm][g])*self.corow[g][i]
-    #print(kvec)
+      self.row_sub_place(rm, i, k)
     d1 = 0
     for j in self.colrange: d1 += self.pid[rm][j]**2 # get the new rownorm of rm after possible mixing
     return d1 < d0
+  def k_from_float(self, num, den): # TODO: consider if too large, ie NaN values
+    if abs(den) < 1e-6: return 0 # ignore small components (while also avoiding zero division)
+    t = num/den
+    if abs(abs(t) - 0.5) < 1e-6: return 0
+    return int((t + 0.5)//1.0)
+  def zcol(self, rm, cm):
+    ''' like colzero_pass, but looking at row not pid, and keeping the row not moving it '''
+    den = self.row[rm][cm]
+    if abs(den) < 1e-6: return False
+    change = False
+    for r in range(rm+1, self.rows):
+      t = self.row[r][cm]/self.row[rm][cm]
+      if abs(abs(t) - 0.5) < 1e-6: continue # ignore small reduction amounts (which could lead to 1,-1,1,-1,1,-1 kind of reduction loops
+      #kf = (2*self.row[r][cm] + den)//(2*den) # TODO: round it down...test case num=4.95, den = -3.54, BAD: num = -2, den = 1.00...002
+      k = int((t + 0.5)//1.0) # int(kf)
+      if k == 0: continue
+      self.row_sub_place(r, rm, k)
+      print("zcol",r,rm,k)
+      change = True
+    return change
+  def zall(self):
+    ''' repeated lq_min()'s and reduces down's loop '''
+    self.lq_min()
+    diag_i = min(self.rows - 1, self.cols - 1)
+    for j in range(diag_i, -1, -1):
+      while self.zcol(j,j):
+        self.lq_min() # TODO: just reorder for this column instead of doing full lq_min()
+  def zpair(self, r1, r2):
+    ''' the pair of rows reduce each other as much as possible'''
+    red1 = False
+    red2 = False
+    self.house_row(r1, 0)
+    t1 = self.row[r2][0]/self.row[r1][0]
+    if abs(abs(t1) - 0.5) >= 1e-6:
+      k = int((t1 + 0.5)//1.0)
+      if k != 0:
+        self.row_sub_place(r2, r1, k)
+        red1 = True
+  def reduce_under_L(self):
+    ''' do zcol on the diagonal elements '''
+    diag = min(self.rows - 1, self.cols - 1)
+    for i in range(diag, -1, -1):
+      self.zcol(i, i)
   def spinered(self):
     ''' use the spine function to find reducing rowmixes'''
     norms = [0 for i in range(self.reddim)]
@@ -567,6 +602,23 @@ class rlq(object):
       for g in self.colrange:
         self.temprow[g] -= m*self.row[i][g]
     return self.tempcol[:]
+  def rowsort(self,y=None,dim=None, key = lambda x: x):
+    '''row sort the cubint, based on elements of y'''
+    if dim==None: dim=self.reddim
+    if y==None: #y is rownorms
+      t=self.norm() # self.tempcol now has the rownorms
+      y = []
+      for i in range(dim):
+        y.append(self.tempcol[i])
+    order=list(range(dim))
+    reverse=list(range(dim))
+    order.sort(key=lambda x: key(y[x])) #get indexes of sorted order
+    reverse.sort(key=lambda x:order[x])
+    for i in range(dim):# perform the permutation,
+      t=reverse.index(i)      # order is indexes after the sort,
+      self.rowswap(i,t)       # so reverse gives the permutation
+      reverse[i],reverse[t]=reverse[t],reverse[i]
+      #self.tempcol[i], self.tempcol[t] = self.tempcol[t], self.tempcol[i] # sort tempcol also to use if want
   def colzero_pass(self,cm=0,rm=None):
     ''' reduce using no divides per-se down the column from rm index if given, from index 0 if rm not given'''
     if rm==None: rm=0
@@ -636,10 +688,20 @@ class rlq(object):
       if k!=0: # self.row_sub_place(j,self.rows-1,k)
         for g in self.colrange:
           self.pid[j][g] -= k*self.pid[self.rows-1][g]
+  def smith_aug(self): # previously def diag()
+    ''' diagonalize with pivoting, use only integer rowmixing'''
+    for i in range(self.rows):
+      self.colzero(i + 1,i)
+      for r in range(i):
+        k=(2*self.pid[r][i + 1] + self.pid[i][i + 1])//(2*self.pid[i][i + 1])
+        if k!=0: #self.row_sub_place(r,i,k)
+          for g in self.colrange:
+            self.pid[r][g] -= k*self.pid[i][g]
   def diag(self):
     ''' return the elements along the diagonal '''
     y=[]
-    for i in self.rowrange: y.append(self.row[i][i])
+    diag_len = min(self.rows, self.cols)
+    for i in range(diag_len): y.append(self.row[i][i])
     return y
   def codiag(self):
     ''' return the elements along the diagonal '''
@@ -649,7 +711,8 @@ class rlq(object):
   def det(self):
     ''' multiple of the diagonal values'''
     d=1
-    for i in self.rowrange: # TODO: consider if do anything with cols < rows
+    diag_len = min(self.rows, self.cols)
+    for i in range(diag_len): # TODO: consider if do anything with cols < rows
       d *= self.row[i][i]
     return d
   def idet(self):
@@ -868,6 +931,19 @@ class rlq(object):
         self.row[i], self.row[mxi] = self.row[mxi], self.row[i]
       self.house_row(i,i)
     for i in range(dim, self.rows): self.house_row(i,i) # do the rest of the rows as well.
+  def lq_min(self, dim = None):
+    ''' form all rows into LQ, sort the first dim (default reddim) rows for minimum non-zero diagonal'''
+    for i in range(self.rows):
+      mn = None # find the minimum next possible in range for the diagonal
+      for j in range(i, self.rows): # the rows from i down all
+        t = 0.0
+        for g in range(i, self.cols): t += self.row[j][g]**2
+        if abs(t) < 1e-6: continue # filter out zero
+        if mn == None or t < mn: mn, mni = t, j
+      if mn != None and mni != i: #<-- inline of rowswap(i, mni)
+        self.pid[i], self.pid[mni] = self.pid[mni], self.pid[i]
+        self.row[i], self.row[mni] = self.row[mni], self.row[i]
+      self.house_row(i,i)
   def lqred(self, disp = False):
     ''' form the lq but with reductions also '''
     change = False
@@ -893,6 +969,53 @@ class rlq(object):
       for j in range(i-1, -1, -1): self.xcol(j,j)
       self.reset() #TODO: inline this, and use return values of xcol() to avoid unneeded reset...
     return change
+  def dig(self, quality = 1.6):
+    ''' reduce the worst 2-dimensional sub-lattice.
+        Assumption of LQ form'''
+    drat = [abs(self.row[i][i]/self.row[i+1][i+1]) for i in range(self.rows-1)]
+    mx = max(drat)
+    while mx > quality:
+      mi = drat.index(mx)
+      #print(int(mx), end = " ")
+      #print(mi, end = " ")
+      t = self.row[mi + 1][mi]/self.row[mi][mi]
+      if abs(abs(t) - 0.5 ) < 1e-6: k = 0# if the possible magnitude change is negligible
+      else: k = int((t + 0.5)//1.0)
+      while k != 0:
+        if k > 765390:
+          print("--", k)
+          return
+        print(k, end=" ")
+        for g in self.colrange:# self.row_sub_place(mi+1, mi, k) without the row update
+          self.pid[mi+1][g] -= k*self.pid[mi][g]
+        self.row[mi+1][mi] = 0.0 # prepare to recalculate
+        for g in self.colrange:
+          self.row[mi+1][mi] += float(self.pid[mi + 1][g])*self.corow[g][mi]
+        for j in range(mi-1, -1, -1):    #<-- then also reduce the now changed values
+          self.row[mi + 1][j] = 0.0
+          for g in self.colrange:         #<-- make precise the pertinent row value
+            self.row[mi+1][j] += float(self.pid[mi+1][g])*self.corow[g][j]
+          t = self.row[mi+1][j]/self.row[j][j]
+          if abs(abs(t) - 0.5) < 1e-6: continue # if the reduction is negligible
+          k = int((t + 0.5)//1.0)
+          if k == 0: continue
+          for g in self.colrange:
+            self.pid[mi+1][g] -= k*self.pid[j][g]
+          self.row[mi + 1][j] = 0.0
+          for g in self.colrange:         #<-- re-calculate the row value
+            self.row[mi+1][j] += float(self.pid[mi+1][g])*self.corow[g][j]
+        if self.row[mi][mi]**2 > self.row[mi + 1][mi]**2 + self.row[mi + 1][mi + 1]**2:
+          self.givens(mi + 1, mi, mi+1)
+          self.pid[mi], self.pid[mi+1] = self.pid[mi+1], self.pid[mi] # TODO: implement indexed LQ
+          self.row[mi], self.row[mi+1] = self.row[mi+1], self.row[mi]
+          t = self.row[mi + 1][mi]/self.row[mi][mi]
+          if abs(abs(t) - 0.5 ) < 1e-6: k = 0# if the possible magnitude change is negligible
+          else: k = int((t + 0.5)//1.0)
+        else: k=0
+      if mi > 0: drat[mi - 1] = abs(self.row[mi-1][mi-1]/self.row[mi][mi])
+      drat[mi] = abs(self.row[mi][mi]/self.row[mi+1][mi+1])
+      if mi < self.rows - 2:drat[mi + 1] = abs(self.row[mi + 1][mi + 1]/self.row[mi + 2][mi + 2])
+      mx = max(drat)
   def digest(self, start=0):
     ''' look at adjacent diagonal values of the LQ form and mix for larger values at the lower end.
         Assumption: row[] is in lq form'''
@@ -913,22 +1036,39 @@ class rlq(object):
       if k!=0: # if there is a reduction
         for g in self.colrange: # self.row_sub_place(i, i - 1, k) without row[] update
           self.pid[i][g] -= k*self.pid[i-1][g]
-        self.row[i][i-1] = 0.0            # prepare to recalculate row[i][i-1]
+        newrij = 0.0 #self.row[i][i-1] = 0.0            # prepare to recalculate row[i][i-1]
         for g in self.colrange:         #<-- update the pertinent row[] value for precision
-          self.row[i][i-1] += float(self.pid[i][g])*self.corow[g][i-1]
+          try:
+            fpd = float(self.pid[i][g])
+          except:
+            continue # here has only happened when I tested smooth numbers (!) (2025.07.28.112821)
+          newrij += fpd*self.corow[g][i-1]
+        self.row[i][i - 1] = newrij
         for j in range(i-2, -1, -1):    #<-- then also reduce the now changed values
-          self.row[i][j] = 0.0
+          newrij = 0.0 # self.row[i][j] = 0.0 # re-align the row value here for precision
           for g in self.colrange:         #<-- make precise the pertinent row value
-            self.row[i][j] += float(self.pid[i][g])*self.corow[g][j]
+            try:
+              fpd = float(self.pid[i][g])
+            except:
+              continue # here has only happened when I tested smooth numbers (!) (2025.07.28.113333)
+            newrij += float(self.pid[i][g])*self.corow[g][j]
+          self.row[i][j] = newrij
+          if self.row[j][j] == 0:
+            continue # here has only happened when I tested smooth numbers (!) (2025.07.28.112359)
           t = self.row[i][j]/self.row[j][j]
           if abs(abs(t) - 0.5) < 1e-6: continue # if the reduction is negligible
           k = int((t + 0.5)//1.0)
           if k == 0: continue # if there is no reduction at all
           for g in self.colrange: #self.row_sub_place(i, j, k)
             self.pid[i][g] -= k*self.pid[j][g]
-          self.row[i][j] = 0.0            #<---------------------------------------------===
+          newrij = 0.0 #self.row[i][j] = 0.0            #<-------------------------------===
           for g in self.colrange:         #<-- update the changed row value for precision ==
-            self.row[i][j] += float(self.pid[i][g])*self.corow[g][j] #<------------------===
+            try:
+              fpd = float(self.pid[i][g])
+            except:
+              continue # here has only happened when I tested smooth numbers (!) (2025.07.28.113722)
+            newrij += fpd*self.corow[g][j] #<--------------------------===
+          self.row[i][j] = newrij
         e = self.row[i][i-1]
       if a*a - (e*e + f*f) > 1e-6: #<- if the reductions found a significantly smaller "upper-low" value
         change = True
@@ -945,8 +1085,8 @@ class rlq(object):
     while rred:
       rred = False
       self.reset(True) # reset(True) includes lq()
-      dratio = []
-      for i in range(1, self.reddim):
+      dratio = [] # TODO: if more rows than columns...this and/or zrow() needs adjustment...
+      for i in range(1, min(self.reddim, self.cols)): # in case more rows than columns, chick min
         if abs(self.row[i][i]) < 1e-6: # there is no discernable independence to the row
           dratio.append(0.0)
         else:
@@ -1307,9 +1447,9 @@ class rlq(object):
       for i in self.colrange:
         self.temprow[j] += self.corow[i][j]*self.corow[i][j]
     return self.temprow[:]
-  ############################################################################################################
-  ####  rowmix/co-rowmix vector targetting functions
-  ############################################################################################################
+############################################################################################################
+####  rowmix/co-rowmix vector targetting functions
+############################################################################################################
   def rowmix(self,rm,a,dim=None): # TODO: consider could do some sort of *= notation if could denote the row to change
     ''' use the constant list to combine with other rows'''  # TODO: such as m[0]*= vector rowmix
     if dim==None:dim=min(self.rows,len(a)) # so can input shorter row vector if omission is taken as zero
@@ -1343,9 +1483,9 @@ class rlq(object):
         space = pfile.read(1)
       pfile.read("\n")
     pfile.close()
-  ############################################################################################################
-  ####  built in functions
-  ############################################################################################################
+############################################################################################################
+####  built in functions
+############################################################################################################
   def __call__(self,r1,r2,k=1): # shortcut for row_sub_place
     if k==0 or r1==r2: return
     for i in self.colrange:
@@ -1459,24 +1599,37 @@ class rlq(object):
         str+=sep
       str+=end
     return str
-  def math_string(self,digits=None):
-    if digits==None:
-      digits=12
+  def math_string(self):
+    cwidth=[0 for i in range(self.cols)] # column widths
+    pstr = []
+    for i in range(self.rows):
+      pstr.append([])
+      for j in range(self.cols):
+      	x = self.pid[i][j].__repr__()
+      	lxl = len(x)
+      	if lxl > cwidth[j]: cwidth[j] = lxl
+      	pstr[i].append(x)
     str="\\pmatrix{"
     for i in range(self.rows):
       for j in range(self.cols):
-        str+=(int(self.pid[i][j]  *10**digits)/(10**digits)).__repr__()
+        diff=cwidth[j] - len(pstr[i][j])
+        if diff != 0:
+        	str += "\\phantom{"
+        	for k in range(diff):
+        		str+="8"
+        	str+= "}"
+        str += self.pid[i][j].__repr__()
         str+=" & "
       str+=" \\\\"
     return str + "}"
   def math_latex(self):
-    str="\\pmatrix{"
+    str="\\pmatrix{\n"
     for i in range(self.rows):
       for j in range(self.cols):
         str+=(self.pid[i][j]).__repr__()
         str+=" & "
-      str+=" \\\\"
-    return str + "}"
+      str+=" \\\\\n"
+    return str + "}\n"
   def math_star(self,thresh = 1.0):
     str="\\pmatrix{"
     for i in range(self.rows):
@@ -1651,10 +1804,10 @@ class rlq(object):
       for j in range(y.cols):
         y.row[i][j]=abs(self.pid[i][j]) # non-linear modification
     return y
-  ############################################################################################################
-  ############################################################################################################
-  ##  Column functions
-  ############################################################################################################
+############################################################################################################
+############################################################################################################
+##  Column functions
+############################################################################################################
   def colswap(self,c1,c2):
     c1,c2=c1%self.cols,c2%self.cols
     if c1==c2: return
@@ -1668,9 +1821,9 @@ class rlq(object):
       self.row[i][cm]=-self.row[i][cm]
     for i in self.colrange:
       self.corow[i][cm]=-self.corow[i][cm]
-  ############################################################################################################
-  ##  Row functions
-  ############################################################################################################
+############################################################################################################
+##  Row functions
+############################################################################################################
   def rowswap(self,r1,r2):
     ''' swap the rows while retaining the LQ form '''
     #r1,r2=r1%self.rows,r2%self.rows
@@ -1696,6 +1849,9 @@ class rlq(object):
       self.row[r1][j] = 0.0
       for i in self.colrange:
         self.row[r1][j] += self.pid[r1][i]*self.corow[i][j]
+    self.drift_row += abs(k*self.drift_row) # aggregate the errors
+    if self.drift_row > self.drift_threshold: # re-align the row matrix if errors accrued/accumulated
+      self.reset() # includes lq()
   def rowslide(self, r1, r2, preserveLQ = True):
     ''' "slide" row at r1 to position r2 while preserving the LQ form '''
     if r1 < r2: #<- if the direction is positive or down to the lower row
