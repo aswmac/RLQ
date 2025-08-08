@@ -1,4 +1,5 @@
 #!/usr/bin/python
+# just getting familiar with numpy a bit
 
 import numpy as np
 from rlq import *
